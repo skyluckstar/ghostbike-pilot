@@ -357,6 +357,10 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
 .snchip{border:1px dashed var(--ink2);background:transparent;border-radius:6px;padding:2px 6px;font-size:12px;font-weight:800;color:var(--ink2)}
 .snchip[aria-pressed="true"]{background:var(--lane);color:var(--laneInk);border:1px solid var(--lane)}
 .pickall{margin-left:auto;border:0;border-radius:10px;padding:10px 14px;background:var(--go);color:#fff;font-weight:700}
+.amtrow{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.amtrow label{font-size:13px;color:var(--ink2);font-weight:600;white-space:nowrap}
+.amtrow input{flex:1;min-width:0;border:1px solid var(--line);background:var(--chip);border-radius:10px;padding:10px;font-size:22px;font-weight:700}
+.pm4.paynow button{background:var(--info);border-color:var(--info);color:#fff;padding:14px 6px;font-size:15px}
 </style></head><body>
 <header class="bar">
   <div class="brand"><i aria-hidden="true"></i><span id="brandName">Ghost Bike</span> <span class="pilot">PILOT</span></div>
@@ -483,6 +487,8 @@ const dayKey=t=>{const d=new Date(t);return `${d.getFullYear()}-${pad(d.getMonth
 // Converts Arabic-Indic (٠-٩) and Persian (۰-۹) digits to 0-9, then keeps digits only.
 const latinDigits=s=>String(s??"").replace(/[٠-٩]/g,d=>d.charCodeAt(0)-0x0660).replace(/[۰-۹]/g,d=>d.charCodeAt(0)-0x06F0);
 const digits=s=>latinDigits(s).replace(/\D/g,"");
+// Reads an amount typed on any keyboard: ١٫٥٠٠, 1,500 or 1.500 all mean 1.500
+const parseAmt=s=>{ const t=latinDigits(s).replace(/[\u066B,]/g,".").replace(/[^\d.]/g,""); const v=parseFloat(t); return isNaN(v)?NaN:v; };
 // Kuwait mobile: drops a leading +965 / 00965 / 965 when present, so the stored number is always the 8 local digits.
 function normPhone(s){ let d=digits(s); const cc=digits((typeof SET!=="undefined"&&SET&&SET.countryCode)||"965");
   if(d.length>8&&d.startsWith("00"+cc)) d=d.slice(2+cc.length); else if(d.length>8&&d.startsWith(cc)) d=d.slice(cc.length); return d; }
@@ -854,8 +860,9 @@ function renderPay(due){
   if(!M.includes(P.method)) P.method=M[0];
   if(P.mode==="single"){
     const paid=r3(P.lines.reduce((a,l)=>a+l.amt,0)), left=r3(due-paid);
-    $("payBox").innerHTML=`<div class="pm4">${M.map(m=>`<button data-pm="${esc(m)}" aria-pressed="${P.method===m}">${esc(m)}</button>`).join("")}</div>
-      <div class="addpay"><input id="amt" class="num" inputmode="decimal" value="${left>0?f(left):""}" aria-label="Amount"><button data-addpay>Add ${esc(P.method)}</button></div>
+    $("payBox").innerHTML=`${left>0.0005?`<div class="amtrow"><label for="amt">Amount to take</label><input id="amt" class="num" inputmode="decimal" value="${f(left)}" aria-label="Amount to take"></div>
+      <div class="pm4 paynow">${M.map(m=>`<button data-pm="${esc(m)}">${esc(m)}</button>`).join("")}</div>
+      <p class="lnote" style="margin:4px 0 8px">Tap how the customer pays. To split, change the amount first.</p>`:""}
       ${P.lines.length?`<div class="plines">${P.lines.map((l,i)=>`<div class="pl"><span>${esc(l.m)}${l.change?` <small>change ${f(l.change)}</small>`:""}</span><span class="num">${f(l.amt)}</span><button data-rmpay="${i}" aria-label="Remove payment">×</button></div>`).join("")}</div>`:""}
       <div class="sub"><span>Paid</span><span class="num">${f(paid)}</span></div>
       <div class="sub rem ${left>0.0005?"due":"ok"}"><span>${left>0.0005?"Remaining":"Settled"}</span><span class="num">${f(Math.max(left,0))}</span></div>`;
@@ -869,7 +876,7 @@ function renderPay(due){
 }
 function addPayment(){
   const due=r3(Object.values(S.pc).reduce((a,b)=>a+b,0)), paid=S.pay.lines.reduce((a,l)=>a+l.amt,0), left=r3(due-paid);
-  const amt=parseFloat(($("amt")||{}).value); if(!(amt>0)) return toast("Enter an amount.");
+  const amt=parseAmt(($("amt")||{}).value); if(!(amt>0)) return toast("Enter the amount to take.");
   if(left<=0.0005) return toast("Nothing left to collect.");
   const m=S.pay.method;
   if(amt>left+0.0005){ if(m==="Cash"){ S.pay.lines.push({m,amt:left,change:r3(amt-left)}); toast(`Give change: ${f(amt-left)} KWD`); render(); return; }
@@ -1124,14 +1131,15 @@ function openSettle(id){
 }
 function drawSettle(){
   const paid=SP.lines.reduce((a,l)=>a+l.amt,0), left=r3(SP.due-paid);
-  $("settlePay").innerHTML=`<div class="pm4" style="margin-top:12px">${SET.methods.map(m=>`<button data-spm="${esc(m)}" aria-pressed="${SP.method===m}">${esc(m)}</button>`).join("")}</div>
-    <div class="addpay"><input id="samt" class="num" inputmode="decimal" value="${left>0?f(left):""}" aria-label="Amount"><button data-sadd>Add ${esc(SP.method)}</button></div>
+  $("settlePay").innerHTML=`${left>0.0005?`<div class="amtrow" style="margin-top:12px"><label for="samt">Amount to take</label><input id="samt" class="num" inputmode="decimal" value="${f(left)}" aria-label="Amount to take"></div>
+    <div class="pm4 paynow">${SET.methods.map(m=>`<button data-spm="${esc(m)}">${esc(m)}</button>`).join("")}</div>
+    <p class="lnote" style="margin:4px 0 8px">Tap how the customer pays. To split, change the amount first.</p>`:""}
     ${SP.lines.map((l,i)=>`<div class="pl"><span>${esc(l.m)}${l.change?` <small>change ${f(l.change)}</small>`:""}</span><span class="num">${f(l.amt)}</span><button data-srm="${i}" aria-label="Remove payment">×</button></div>`).join("")}
     <div class="bal ${left>0.0005?"due":"zero"}"><span>${left>0.0005?"Remaining":"Paid in full"}</span><span class="num">${f(Math.max(left,0))}</span></div>`;
   const pb=document.querySelector(".dlg .primary"); pb.disabled=left>0.0005; pb.textContent=left>0.0005?`Collect ${f(left)} more`:"Post invoice & payment";
 }
 function addSettlePay(){
-  const paid=SP.lines.reduce((a,l)=>a+l.amt,0), left=r3(SP.due-paid), amt=parseFloat($("samt").value);
+  const paid=SP.lines.reduce((a,l)=>a+l.amt,0), left=r3(SP.due-paid), amt=parseAmt(($("samt")||{}).value);
   if(!(amt>0)) return toast("Enter an amount."); if(left<=0.0005) return toast("Nothing left to collect.");
   if(amt>left+0.0005){ if(SP.method==="Cash"){SP.lines.push({m:"Cash",amt:left,change:r3(amt-left)});toast(`Give change: ${f(amt-left)} KWD`);drawSettle();return;}
     return toast(`${SP.method} amount can't be more than the remaining ${f(left)}.`); }
@@ -1308,7 +1316,7 @@ function renderReport(){
       ${(!SET.accounts.journal||!SET.accounts.revenue||SET.methods.some(m=>!SET.accounts[m]))?`<p class="warnmsg">Account codes are missing in Settings. The journal entry file will have blank accounts.</p>`:""}
       <div class="btnrow"><button class="btn pri" data-closeday="${D}">Close day & save files</button><button class="btn" data-exp="je|${D}">Journal entry CSV</button><button class="btn" data-exp="det|${D}">Details CSV</button><button class="btn" data-exp="cust|${D}">Customers CSV</button></div></div>`;
 }
-function saveCash(D){ REPORT_DIRTY=false; DAYS_LOG[D]={...(DAYS_LOG[D]||{}),float:$("cFloat").value,topup:$("cTop").value,counted:$("cCount").value}; persist("days"); renderReport(); toast("Cash count saved."); }
+function saveCash(D){ REPORT_DIRTY=false; const A=id=>{ const v=$(id).value.trim(); return v===""?"":String(parseAmt(v)); }; DAYS_LOG[D]={...(DAYS_LOG[D]||{}),float:A("cFloat"),topup:A("cTop"),counted:A("cCount")}; persist("days"); renderReport(); toast("Cash count saved."); }
 const csv=rows=>"\ufeff"+rows.map(r=>r.map(v=>{v=v==null?"":String(v);return /[",\n]/.test(v)?`"${v.replace(/"/g,'""')}"`:v;}).join(",")).join("\r\n");
 function exportJE(D){
   const x=dayData(D), A=SET.accounts, rows=[["journal_id","date","ref","line_ids/account_id","line_ids/name","line_ids/debit","line_ids/credit"]];
@@ -1515,7 +1523,7 @@ document.addEventListener("click",e=>{
   if(c("#tSN")){ S.sn=!S.sn; S.snCodes=S.sn&&S.sel.length?[S.sel[0]]:[]; if(S.sn&&S.sel.length>1) toast("Special needs is on for "+S.sel[0]+". Tap SN on another bike to move it."); return render(); }
   if(x=c("[data-sncode]")){ const k=x.dataset.sncode; S.snCodes=S.snCodes.includes(k)?S.snCodes.filter(v=>v!==k):[...S.snCodes,k]; return render(); }
   if(c("#tNBK")){ S.nbk=!S.nbk; return render(); }
-  if(x=c("[data-pm]")){ S.pay.method=x.dataset.pm; return render(); }
+  if(x=c("[data-pm]")){ S.pay.method=x.dataset.pm; return addPayment(); }
   if(x=c("[data-pmode]")){ S.pay.mode=x.dataset.pmode; return render(); }
   if(c("[data-addpay]")) return addPayment();
   if(x=c("[data-rmpay]")){ S.pay.lines.splice(+x.dataset.rmpay,1); return render(); }
@@ -1547,7 +1555,7 @@ document.addEventListener("click",e=>{
   if(x=c("[data-ck]")){ const l=ORDERS.flatMap(o=>o.lines).find(l=>l.code===x.dataset.ck&&l.state==="toSettle"); if(l){l.pick_sel=!l.pick_sel; renderSettle();} return; }
   if(x=c("[data-settle]")) return openSettle(x.dataset.settle);
   if(x=c("[data-refund]")) return openRefund(x.dataset.refund);
-  if(x=c("[data-spm]")){ SP.method=x.dataset.spm; return drawSettle(); }
+  if(x=c("[data-spm]")){ SP.method=x.dataset.spm; return addSettlePay(); }
   if(c("[data-sadd]")) return addSettlePay();
   if(x=c("[data-srm]")){ SP.lines.splice(+x.dataset.srm,1); return drawSettle(); }
   // orders / maintenance / report / settings
@@ -1579,6 +1587,7 @@ $("rFrom").onchange=e=>{OR.from=e.target.value;renderOrders();}; $("rTo").onchan
 $("repDate").onchange=()=>{REPORT_DIRTY=false;renderReport();};
 $("reportBody").addEventListener("input",e=>{ if(e.target.id&&/^c(Float|Top|Count)$/.test(e.target.id)) REPORT_DIRTY=true; });
 $("settingsBody").addEventListener("input",()=>{SETDIRTY=true;}); $("settingsBody").addEventListener("change",()=>{SETDIRTY=true;});
+document.addEventListener("input",e=>{ const t=e.target; if(t&&/^(amt|samt|cFloat|cTop|cCount)$/.test(t.id)){ const v=latinDigits(t.value).replace(/\u066B/g,"."); if(v!==t.value) t.value=v; } });
 document.addEventListener("keydown",e=>{ if(e.key!=="Enter") return; if(e.target.id==="amt") addPayment(); if(e.target.id==="samt") addSettlePay(); });
 // barcode scanner typing outside any field (fast keystrokes ending with Enter)
 let SB="",ST=0;
