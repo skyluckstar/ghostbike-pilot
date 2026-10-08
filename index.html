@@ -353,6 +353,10 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
 .net{font-size:12px;font-weight:700;padding:3px 8px;border-radius:8px}
 .net.on{color:#8FE0B5}.net.off{background:var(--stop);color:#fff}
 #userLbl{color:#fff;font-weight:600}
+.codewrap{display:inline-flex;align-items:center;gap:2px}
+.snchip{border:1px dashed var(--ink2);background:transparent;border-radius:6px;padding:2px 6px;font-size:12px;font-weight:800;color:var(--ink2)}
+.snchip[aria-pressed="true"]{background:var(--lane);color:var(--laneInk);border:1px solid var(--lane)}
+.pickall{margin-left:auto;border:0;border-radius:10px;padding:10px 14px;background:var(--go);color:#fff;font-weight:700}
 </style></head><body>
 <header class="bar">
   <div class="brand"><i aria-hidden="true"></i><span id="brandName">Ghost Bike</span> <span class="pilot">PILOT</span></div>
@@ -381,7 +385,7 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
     <div>
       <h2>Offers</h2>
       <div id="dayOfferBox"></div>
-      <button class="toggle" id="tSN" aria-pressed="false"><span>Special needs<small>First hour free on the rider's bike (first bike)</small></span><span class="sw" aria-hidden="true"></span></button>
+      <button class="toggle" id="tSN" aria-pressed="false"><span>Special needs<small>First hour free · tap <b>SN</b> on the rider's bike in the ticket</small></span><span class="sw" aria-hidden="true"></span></button>
       <button class="toggle" id="tNBK" aria-pressed="false"><span>NBK employee<small id="nbkLbl">Check staff ID</small></span><span class="sw" aria-hidden="true"></span></button>
     </div>
     <div>
@@ -621,7 +625,9 @@ function startWatchers(){
   const err=e=>toast("Cloud connection problem: "+(e.code||e.message));
   CLOUD.watch("config",m=>{ const s=m.get("settings"), b=m.get("bikes");
     if(s) SET={...DEFAULT_SETTINGS,...s,offers:{...DEFAULT_SETTINGS.offers,...s.offers},company:{...DEFAULT_SETTINGS.company,...s.company},accounts:{...DEFAULT_SETTINGS.accounts,...s.accounts}};
-    if(b) BIKES=b.list; COUNTERS=m.get("counters")||{}; done("config"); scheduleRefresh(); },err);
+    if(b) BIKES=b.list; COUNTERS=m.get("counters")||{};
+    PENDING_SET.forEach(p=>{ applySet(SET,p.sc); if(p.ct) SET.placeholderCounts=false; applyBikes(BIKES,p.bc); });   // our own save still on its way: keep showing it
+    done("config"); scheduleRefresh(); },err);
   const listW=(col,set)=>CLOUD.watch(col,m=>{ const arr=[]; BASE[col]={}; m.forEach((v,id)=>{arr.push(v); BASE[col][id]=JSON.stringify(v);}); set(arr); done(col); scheduleRefresh(); },err);
   listW("units",a=>UNITS=a); listW("customers",a=>CUSTOMERS=a); listW("drafts",a=>DRAFTS=a.sort((x,y)=>y.at-x.at));
   CLOUD.watch("days",m=>{ DAYS_LOG={}; BASE.days={}; m.forEach((v,id)=>{DAYS_LOG[id]=v; BASE.days[id]=JSON.stringify(v);}); done("days"); scheduleRefresh(); },err);
@@ -722,9 +728,9 @@ function offerDetail(k,p){return {sn:"First hour free on the rider's bike",nbk:`
   mon:`${f(p.monPrice)} KWD/hour on selected bikes`,wed:`${f(p.wedPrice)} KWD/hour on selected bikes + free coffee`,none:"No offer applies"}[k];}
 // pseudo-order from the ticket on screen
 function ticketCtx(){return {nbk:S.nbk,dow:todayDow(),dayOffer:S.dayOffer,p:SET.offers};}
-function ticketLine(code,i){const u=unit(code),b=bikeById(u.bikeId);return {code,bikeId:b.id,name:b.name,rate:b.rate,mon:b.mon,wed:b.wed,sn:S.sn&&i===0};}
+function ticketLine(code,i){const u=unit(code),b=bikeById(u.bikeId);return {code,bikeId:b.id,name:b.name,rate:b.rate,mon:b.mon,wed:b.wed,sn:S.sn&&(S.snCodes||[]).includes(code)};}
 /* ================= 1 · NEW RENTAL ================= */
-const S={sel:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,q:"",cat:"Popular",draftId:null,
+const S={sel:[],snCodes:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,q:"",cat:"Popular",draftId:null,
   pay:{mode:"single",method:"KNET",lines:[],rider:{}},pc:{}};
 const custById=id=>CUSTOMERS.find(c=>c.id===id);
 const qualifies=(g,dow)=>(dow===0&&g==="Male")||(dow===3&&g==="Female");
@@ -787,6 +793,8 @@ function renderNew(){
   const g=(custById(S.custId)||{}).gender;
   $("dayOfferBox").innerHTML=dd?`<button class="toggle" id="tDay" aria-pressed="${S.dayOffer}"><span>${dd[0]}<small>${dd[1]}${g?` · customer is ${g}`:""}</small></span><span class="sw" aria-hidden="true"></span></button>`:"";
   if(!dd) S.dayOffer=false;
+  S.snCodes=(S.snCodes||[]).filter(c=>S.sel.includes(c));
+  if(S.sn&&!S.snCodes.length&&S.sel.length===1) S.snCodes=[S.sel[0]];          // one bike: it is the rider's bike
   $("tSN").setAttribute("aria-pressed",S.sn); $("tNBK").setAttribute("aria-pressed",S.nbk);
   $("nbkLbl").textContent=`${SET.offers.nbkPct}% off · check staff ID`;
   // headline offer
@@ -825,7 +833,7 @@ function renderNew(){
     const gross=r3(b.rate*cs.length), net=r3(cs.reduce((a,c)=>a+PC[c],0)); G+=gross; N+=net;
     const ks=[...new Set(lines.filter(l=>cs.includes(l.code)).map(l=>lineKey(ctx,l)))].filter(k=>k!=="none");
     html+=`<div class="line"><span class="lq"><span class="mini"><button data-b="${b.id}" data-d="-1" aria-label="Remove one ${esc(b.name)}">−</button><b class="num">${cs.length}</b><button data-b="${b.id}" data-d="1" ${cs.length>=freeCount(b.id)?"disabled":""} aria-label="Add one ${esc(b.name)}">+</button></span>${bikeIcon(b.icon,"bi sm")}${esc(b.name)}</span><span class="num">${f(net)}</span>
-      <span class="codes">${cs.map(c=>`<button class="code num" data-swap="${c}" title="Swap for another free ${esc(b.name)}">${c}</button>`).join("")}</span>
+      <span class="codes">${cs.map(c=>`<span class="codewrap"><button class="code num" data-swap="${c}" title="Swap for another free ${esc(b.name)}">${c}</button>${S.sn?`<button class="snchip" data-sncode="${c}" aria-pressed="${S.snCodes.includes(c)}" title="Special needs rider on this bike">SN</button>`:""}</span>`).join("")}</span>
       <small>1st hour × ${f(b.rate)}${ks.length?` · ${ks.map(k=>OFFER_LABEL[k]).join(", ")}`:""}</small></div>`;
   });
   $("lines").innerHTML=html||`<div class="empty">Tap a bike or scan its code to start</div>`;
@@ -834,6 +842,7 @@ function renderNew(){
   const st=renderPay(r3(N));
   if(!count){go.disabled=true;why.textContent="Add at least one bike.";go.textContent="Confirm order";}
   else if(!S.custId&&!S.walkin){go.disabled=true;why.textContent="Select or create the customer, or choose Walk-in.";go.textContent="Confirm order";}
+  else if(S.sn&&!S.snCodes.length){go.disabled=true;why.textContent="Special needs is on: tap SN on the rider's bike in the ticket.";go.textContent="Confirm order";}
   else{ go.disabled=!st.ok; why.textContent=st.ok?"":st.msg;
     go.textContent=N<0.0005?"Confirm order (no charge)":st.ok?"Confirm order · send to delivery":`Collect ${f(st.left)} KWD more`; }
   $("splitNote").textContent=count>1?`One rental order with ${count} bikes. The advance is invoiced now; extra hours are invoiced per bike as they come back.`:"";
@@ -927,8 +936,8 @@ async function confirmOrder(){
 /* ---------- held tickets ---------- */
 function hasContent(){return S.sel.length||S.pay.lines.length||S.custId||S.walkin;}
 function curWho(){const c=custById(S.custId);return c?c.name:S.walkin?"Walk-in":(digits($("phone").value)||"New customer");}
-function snap(){return {sel:[...S.sel],custId:S.custId,walkin:S.walkin,sn:S.sn,nbk:S.nbk,dayOffer:S.dayOffer,pay:JSON.parse(JSON.stringify(S.pay)),phone:$("phone").value,who:curWho(),at:NOW()};}
-function resetTicket(){Object.assign(S,{sel:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,draftId:null,pay:{mode:S.pay.mode,method:SET.methods[0],lines:[],rider:{}}});$("phone").value="";}
+function snap(){return {sel:[...S.sel],custId:S.custId,walkin:S.walkin,sn:S.sn,snCodes:[...(S.snCodes||[])],nbk:S.nbk,dayOffer:S.dayOffer,pay:JSON.parse(JSON.stringify(S.pay)),phone:$("phone").value,who:curWho(),at:NOW()};}
+function resetTicket(){Object.assign(S,{sel:[],snCodes:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,draftId:null,pay:{mode:S.pay.mode,method:SET.methods[0],lines:[],rider:{}}});$("phone").value="";}
 async function holdCurrent(forceNew){
   if(hasContent()){
     const id=S.draftId||numFmt("draft",(await allocNos({draft:1})).draft);
@@ -945,7 +954,7 @@ async function resumeDraft(id){
   const d=DRAFTS.find(x=>x.id===id); if(!d) return;
   DRAFTS=DRAFTS.filter(x=>x.id!==id);
   d.sel.forEach(c=>{const u=unit(c); if(u&&u.st==="draft"&&(u.draft===id||!u.draft)){ u.st="free"; u.draft=null; }});
-  Object.assign(S,{sel:d.sel.filter(c=>unit(c)&&unit(c).st==="free"),custId:d.custId,walkin:d.walkin,sn:d.sn,nbk:d.nbk,dayOffer:d.dayOffer,pay:d.pay,draftId:id});
+  Object.assign(S,{sel:d.sel.filter(c=>unit(c)&&unit(c).st==="free"),custId:d.custId,walkin:d.walkin,sn:d.sn,snCodes:d.snCodes||[],nbk:d.nbk,dayOffer:d.dayOffer,pay:d.pay,draftId:id});
   $("phone").value=d.phone||""; persist("drafts","units");
   showView("new"); refreshAll(); toast(`${id} resumed where you left off.`);
 }
@@ -998,7 +1007,7 @@ function renderBoard(){
     const riding=o.lines.filter(l=>l.state==="riding").length, waiting=o.lines.filter(l=>l.state==="waiting").length;
     const k=[...new Set(o.lines.map(l=>lineKey(o,l)))].filter(x=>x!=="none");
     return `<div class="group"><div class="ghead"><b>${esc(o.who)}</b><span>${o.id}</span>${o.phone?`<span class="num">${fmtPhone(o.phone)}</span>`:""}${k.map(x=>`<span class="tag">${OFFER_LABEL[x]}</span>`).join("")}
-      <span>${riding} riding${waiting?` · ${waiting} waiting`:""} · ${o.lines.length} bikes</span></div>
+      <span>${riding} riding${waiting?` · ${waiting} waiting`:""} · ${o.lines.length} bikes</span>${waiting>1?`<button class="pickall" data-pickall="${o.id}">Pick up all ${waiting}</button>`:""}</div>
       ${o.lines.map(l=>{ const s=lineStatus(l), el=l.pick?(l.ret||NOW())-l.pick:0;
         const btns=l.state==="waiting"?`<div class="racts"><button data-pickup="${l.code}">Confirm pickup</button><span><button class="ghost" data-cancel="${l.code}">Cancel</button></span></div>`
           :l.state==="riding"?`<div class="racts"><button data-ret="${l.code}">Confirm return</button><span><button class="ghost" data-swapride="${l.code}">Swap bike</button><button class="ghost" data-cancel="${l.code}">Cancel${NOW()-l.pick<o.p.graceMin*MIN?` · ${o.p.graceMin-Math.floor((NOW()-l.pick)/MIN)}m`:""}</button></span></div>`:`<span></span>`;
@@ -1010,6 +1019,10 @@ function renderBoard(){
 }
 function confirmPickup(c){ const l=lineByCode(c,true); if(!l||l.state!=="waiting") return; l.pick=NOW(); l.state="riding"; unit(c).st="out";
   persistOrder(orderOf(l)); persist("units"); refreshAll(); toast(`${c} handed over at ${clock(l.pick)}. Clock started.`); }
+// Hands over every waiting bike of one order at the same moment: all clocks start together.
+function confirmPickupAll(id){ const o=ORDERS.find(x=>x.id===id); if(!o) return; const now=NOW(), done=[];
+  o.lines.forEach(l=>{ if(l.state==="waiting"){ l.pick=now; l.state="riding"; const u=unit(l.code); if(u) u.st="out"; done.push(l.code); } });
+  if(!done.length) return; persistOrder(o); persist("units"); refreshAll(); toast(`${done.length} bikes handed over at ${clock(now)}: ${done.join(", ")}. Clocks started.`); }
 function handleDeskScan(raw){ const c=raw.trim().toUpperCase(), l=lineByCode(c,true);
   if(!l) return toast(`${c} is not on any open rental. Check the code.`);
   if(l.state==="waiting") return confirmPickup(c); openReturn(c); }
@@ -1419,6 +1432,7 @@ function renderSettings(){
 }
 // Settings saves send only the fields changed on this desk, merged into the latest cloud copy,
 // so two people editing Settings on different desks never undo each other's changes.
+let PENDING_SET=[];
 const changed=el=>el.type==="checkbox"?el.checked!==el.defaultChecked:el.tagName==="SELECT"?[...el.options].some(o=>o.selected!==o.defaultSelected):el.value!==el.defaultValue;
 function collectChanges(){
   const sc=[], bc={}; let err="";
@@ -1450,11 +1464,13 @@ async function saveAllSettings(){
     Object.assign(b,ch); const live=syncUnits(b); if(live>b.count) notes.push(`${b.name}: ${live-b.count} bike(s) are out or reserved, so ${live} stay until they come back`); });
   applySet(SET,sc); if(countsTouched) SET.placeholderCounts=false;
   persist("units");
+  const pend={sc,bc:JSON.parse(JSON.stringify(bc)),ct:countsTouched}; PENDING_SET.push(pend);
   try{ await withTimeout(CLOUD.txn(async t=>{ const sv=(await t.get("config","settings"))||clean(SET), bv=(await t.get("config","bikes"))||{list:clean(BIKES)};
       applySet(sv,sc); if(countsTouched) sv.placeholderCounts=false;
       BIKES.forEach(b=>{ if(!bv.list.some(x=>x.id===b.id)) bv.list.push(clean(b)); }); applyBikes(bv.list,bc);
       t.set("config","settings",clean(sv)); t.set("config","bikes",{list:clean(bv.list)}); }),8000); }
   catch(e){ persist("settings","bikes"); }   // offline: save this desk's copy, synced later
+  finally{ setTimeout(()=>{ const i=PENDING_SET.indexOf(pend); if(i>=0) PENDING_SET.splice(i,1); },4000); }   // kept until the cloud copy has surely arrived
   SETDIRTY=false; refreshAll(); renderSettings();
   toast(notes.length?"Saved. "+notes.join(". "):"Saved. Bikes, prices and settings are live on every desk.");
   return notes;
@@ -1489,14 +1505,15 @@ document.addEventListener("click",e=>{
   // new rental
   if(x=c("[data-b]")) return addOrRemove(x.dataset.b,Number(x.dataset.d));
   if(x=c("[data-add]")) return addOrRemove(x.dataset.add,1);
-  if(x=c("[data-swap]")){ const u=unit(x.dataset.swap), nx=nextFree(u.bikeId); if(nx){S.sel[S.sel.indexOf(u.code)]=nx.code;render();toast(`${u.code} swapped for ${nx.code}`);} else toast("No other free bike of this type."); return; }
+  if(x=c("[data-swap]")){ const u=unit(x.dataset.swap), nx=nextFree(u.bikeId); if(nx){S.sel[S.sel.indexOf(u.code)]=nx.code; S.snCodes=(S.snCodes||[]).map(v=>v===u.code?nx.code:v); render();toast(`${u.code} swapped for ${nx.code}`);} else toast("No other free bike of this type."); return; }
   if(x=c("[data-cat]")){ S.cat=x.dataset.cat; S.q=""; $("bq").value=""; return render(); }
   if(x=c("[data-cust]")) return selectCustomer(x.dataset.cust);
   if(c("[data-cust-clear]")){ S.custId=null; S.walkin=false; S.dayOffer=false; $("phone").value=""; render(); return $("phone").focus(); }
   if(c("[data-newcust]")) return openNewCustomer();
   if(c("[data-walkin]")){ S.walkin=true; S.custId=null; return render(); }
   if(c("#tDay")){ S.dayOffer=!S.dayOffer; return render(); }
-  if(c("#tSN")){ S.sn=!S.sn; return render(); }
+  if(c("#tSN")){ S.sn=!S.sn; S.snCodes=S.sn&&S.sel.length?[S.sel[0]]:[]; if(S.sn&&S.sel.length>1) toast("Special needs is on for "+S.sel[0]+". Tap SN on another bike to move it."); return render(); }
+  if(x=c("[data-sncode]")){ const k=x.dataset.sncode; S.snCodes=S.snCodes.includes(k)?S.snCodes.filter(v=>v!==k):[...S.snCodes,k]; return render(); }
   if(c("#tNBK")){ S.nbk=!S.nbk; return render(); }
   if(x=c("[data-pm]")){ S.pay.method=x.dataset.pm; return render(); }
   if(x=c("[data-pmode]")){ S.pay.mode=x.dataset.pmode; return render(); }
@@ -1519,6 +1536,7 @@ document.addEventListener("click",e=>{
   if(x=c("[data-dst]")){ DF.st=x.dataset.dst; return renderBoard(); }
   if(c("[data-dclear]")){ DF.q=""; DF.st="all"; $("dq").value=""; return renderBoard(); }
   if(x=c("[data-pickup]")) return confirmPickup(x.dataset.pickup);
+  if(x=c("[data-pickall]")) return confirmPickupAll(x.dataset.pickall);
   if(x=c("[data-ret]")) return openReturn(x.dataset.ret);
   if(x=c("[data-swapride]")) return openSwap(x.dataset.swapride);
   if(x=c("[data-cancel]")) return openCancel(x.dataset.cancel);
