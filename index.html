@@ -361,6 +361,8 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
 .amtrow label{font-size:13px;color:var(--ink2);font-weight:600;white-space:nowrap}
 .amtrow input{flex:1;min-width:0;border:1px solid var(--line);background:var(--chip);border-radius:10px;padding:10px;font-size:22px;font-weight:700}
 .pm4.paynow button{background:var(--info);border-color:var(--info);color:#fff;padding:14px 6px;font-size:15px}
+#phone.flash{outline:4px solid var(--lane);outline-offset:2px;animation:flash .5s 3}
+@keyframes flash{50%{outline-color:transparent}}
 </style></head><body>
 <header class="bar">
   <div class="brand"><i aria-hidden="true"></i><span id="brandName">Ghost Bike</span> <span class="pilot">PILOT</span></div>
@@ -847,10 +849,10 @@ function renderNew(){
   const count=S.sel.length, go=$("go"), why=$("why");
   const st=renderPay(r3(N));
   if(!count){go.disabled=true;why.textContent="Add at least one bike.";go.textContent="Confirm order";}
-  else if(!S.custId&&!S.walkin){go.disabled=true;why.textContent="Select or create the customer, or choose Walk-in.";go.textContent="Confirm order";}
   else if(S.sn&&!S.snCodes.length){go.disabled=true;why.textContent="Special needs is on: tap SN on the rider's bike in the ticket.";go.textContent="Confirm order";}
-  else{ go.disabled=!st.ok; why.textContent=st.ok?"":st.msg;
-    go.textContent=N<0.0005?"Confirm order (no charge)":st.ok?"Confirm order · send to delivery":`Collect ${f(st.left)} KWD more`; }
+  else{ go.disabled=!st.ok; const noCust=!S.custId&&!S.walkin;
+    why.textContent=!st.ok?st.msg:noCust?"No customer chosen yet: you'll be asked when you confirm.":"";
+    go.textContent=!st.ok?`Collect ${f(st.left)} KWD more`:N<0.0005?"Confirm order (no charge)":"Confirm order · send to delivery"; }
   $("splitNote").textContent=count>1?`One rental order with ${count} bikes. The advance is invoiced now; extra hours are invoiced per bike as they come back.`:"";
   renderDraftBar();
 }
@@ -904,7 +906,17 @@ function newInvoice(no,o,kind,codes,amount,pays,itemsFn){
   inv.by=(CURUSER||{}).email||""; o.invoices.push(inv); return inv;
 }
 let BUSY=false;
+// Payment done but no customer chosen: ask now, with Walk-in as one tap.
+function askCustomer(){
+  $("dlgBody").innerHTML=`<h3>Who is this rental for?</h3><div class="meta">Choose before the order is confirmed.</div>
+    <div class="acts" style="grid-template-columns:1fr;gap:10px;margin-top:14px">
+      <button class="primary" data-askc="walkin" style="padding:18px;font-size:18px">Walk-in · no mobile · confirm now</button>
+      <button data-askc="mobile" style="padding:18px;font-size:18px">Enter the customer's mobile</button>
+      <button data-act="close">Cancel</button></div>`;
+  $("dlg").showModal();
+}
 async function confirmOrder(){
+  if(!S.custId&&!S.walkin) return askCustomer();
   if(BUSY) return; BUSY=true; $("go").disabled=true; $("go").textContent="Saving…";
   try{
   const c=custById(S.custId), dow=todayDow(), sel=[...S.sel], draftId=S.draftId;
@@ -1529,6 +1541,9 @@ document.addEventListener("click",e=>{
   if(x=c("[data-rmpay]")){ S.pay.lines.splice(+x.dataset.rmpay,1); return render(); }
   if(x=c("[data-rp]")){ const [code,m]=x.dataset.rp.split("|"); S.pay.rider[code]=S.pay.rider[code]===m?undefined:m; return render(); }
   if(c("#go")) return confirmOrder();
+  if(x=c("[data-askc]")){ $("dlg").close();
+    if(x.dataset.askc==="walkin"){ S.walkin=true; render(); return confirmOrder(); }
+    const box=$("phone"); box.scrollIntoView({behavior:"smooth",block:"center"}); box.classList.add("flash"); setTimeout(()=>box.classList.remove("flash"),2500); setTimeout(()=>box.focus(),300); return; }
   if(c("[data-hold]")) return holdCurrent();
   if(c("[data-newdraft]")) return holdCurrent(true);
   if(c("[data-discard]")) return discardCurrent();
