@@ -336,10 +336,13 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
 .prov{font-size:11px;text-align:center;border:1px solid #111;padding:3px;margin:6px 0}
 @media (max-width:1080px){.tabs .tab{padding:8px 10px}}
 
-.bar .tabs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+.bar .tabs{flex-wrap:wrap;row-gap:4px}
 .bar .tab{white-space:nowrap}
 .bar .day{white-space:nowrap}
-.bar{flex-wrap:nowrap}
+.bar{flex-wrap:wrap;row-gap:6px}
+.bar .tabs{margin-left:0;flex:1 1 auto}
+.tsep{display:none}
+.bar .day{margin-left:auto;flex-wrap:wrap}
 .rules li.avail{color:var(--ink2);font-style:italic}
 .rules li.avail span:last-child{color:var(--info)}
 .fmsg{min-height:18px;font-size:13px;margin-top:4px}.fmsg .bad,.lnote.bad,.bad{color:var(--stop);font-weight:600}.fmsg .good{color:var(--go);font-weight:700}
@@ -590,17 +593,19 @@ function persistOrder(o){
   const id=o.id, local=stripOrder(o), base=BASE.orders[id]?JSON.parse(BASE.orders[id]):null;
   PENDING.add(id);
   orderChains[id]=(orderChains[id]||Promise.resolve()).then(async()=>{
-    try{ await withTimeout(CLOUD.txn(async t=>{ const s=await t.get("orders",id); t.set("orders",id,clean(mergeOrder(base,local,s))); }),8000); }
-    catch(e){ CLOUD.write([{t:"set",col:"orders",id,data:local}]).catch(()=>{}); }   // offline: saved locally, synced when back online
-    finally{ PENDING.delete(id); adoptLatest(id); }
+    let saved=null;
+    try{ saved=await withTimeout(CLOUD.txn(async t=>{ const sv=await t.get("orders",id); const m=clean(mergeOrder(base,local,sv)); m.rev=Math.max((sv&&sv.rev)||0,local.rev||0)+1; t.set("orders",id,m); return m; }),8000); }
+    catch(e){ saved={...local,rev:(local.rev||0)+1}; CLOUD.write([{t:"set",col:"orders",id,data:saved}]).catch(()=>{}); }   // offline: saved locally, synced when back online
+    finally{ PENDING.delete(id); adoptLatest(id,saved); }
   });
   return orderChains[id];
 }
-// After our own save, show the latest cloud copy (it may include another desk's change made at the same moment).
+// After our own save, show what is now in the cloud: our saved copy, or a newer one if another desk changed it since.
 let LAST_ORD=new Map();
-function adoptLatest(id){ const v=LAST_ORD.get(id); if(!v) return; const i=ORDERS.findIndex(o=>o.id===id); if(i<0) return;
-  const prev=ORDERS[i], nv=JSON.parse(JSON.stringify(v)); nv.lines.forEach((l,k)=>{ const pl=prev.lines[k]; if(pl&&pl.code===l.code&&pl.pick_sel!==undefined) l.pick_sel=pl.pick_sel; });
-  ORDERS[i]=nv; scheduleRefresh(); }
+function adoptLatest(id,saved){ const i=ORDERS.findIndex(o=>o.id===id); if(i<0) return;
+  const snap=LAST_ORD.get(id); const pick=(snap&&(snap.rev||0)>=((saved&&saved.rev)||0))?snap:saved; if(!pick) return;
+  const prev=ORDERS[i], nv=JSON.parse(JSON.stringify(pick)); nv.lines.forEach((l,k)=>{ const pl=prev.lines[k]; if(pl&&pl.code===l.code&&pl.pick_sel!==undefined) l.pick_sel=pl.pick_sel; });
+  ORDERS[i]=nv; BASE.orders[id]=JSON.stringify(pick); scheduleRefresh(); }
 const flush=async()=>{ await Promise.all(Object.values(orderChains)); };
 
 /* ---------- live updates from other desks ---------- */
@@ -624,7 +629,8 @@ function startWatchers(){
     LAST_ORD=m; const old=new Map(ORDERS.map(o=>[o.id,o])), next=[];
     m.forEach((v,id)=>{ BASE.orders[id]=JSON.stringify(v);
       if(PENDING.has(id)&&old.has(id)){ next.push(old.get(id)); return; }       // our own save is still on its way
-      const prev=old.get(id); if(prev) v.lines.forEach((l,i)=>{ const pl=prev.lines[i]; if(pl&&pl.code===l.code&&pl.pick_sel!==undefined) l.pick_sel=pl.pick_sel; });
+      const prev=old.get(id); if(prev&&(prev.rev||0)>(v.rev||0)){ next.push(prev); return; }   // an older copy arriving late
+      if(prev) v.lines.forEach((l,i)=>{ const pl=prev.lines[i]; if(pl&&pl.code===l.code&&pl.pick_sel!==undefined) l.pick_sel=pl.pick_sel; });
       next.push(v); });
     old.forEach((o,id)=>{ if(!m.has(id)&&PENDING.has(id)) next.push(o); });
     ORDERS=next.sort((a,b)=>b.created-a.created); done("orders"); scheduleRefresh(); },err);
@@ -634,10 +640,12 @@ async function seedIfEmpty(){
   if(SET&&BIKES) return;
   SET=JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); SET.placeholderCounts=true;
   BIKES=JSON.parse(JSON.stringify(DEFAULT_BIKES)); UNITS=[]; BIKES.forEach(syncUnits);
+  const units=clean(UNITS);
   try{ await withTimeout(CLOUD.txn(async t=>{ const s=await t.get("config","settings"); if(s) return;
-      t.set("config","settings",clean(SET)); t.set("config","bikes",{list:clean(BIKES)}); }),10000); }
+      t.set("config","settings",clean(SET)); t.set("config","bikes",{list:clean(BIKES)});
+      units.forEach(u=>t.set("units",u.code,u)); }),15000); }        // bike codes created in the same step, so they can't be lost
   catch(e){ toast("Could not set up the cloud database: "+e.message); return; }
-  persist("units");
+  if(!UNITS.length) UNITS=units;
 }
 async function loadAll(){
   DB=await idb(); loadMeta();
@@ -885,7 +893,7 @@ async function confirmOrder(){
   try{
   const c=custById(S.custId), dow=todayDow(), sel=[...S.sel], draftId=S.draftId;
   const o={id:"",created:NOW(),custId:c?c.id:null,who:c?c.name:"Walk-in",phone:c?c.phone:"",gender:c?c.gender:"",
-    dow,dayOffer:S.dayOffer,nbk:S.nbk,p:{...SET.offers},lines:[],invoices:[],voucher:null,by:(CURUSER||{}).email||""};
+    dow,dayOffer:S.dayOffer,nbk:S.nbk,p:{...SET.offers},lines:[],invoices:[],voucher:null,by:(CURUSER||{}).email||"",rev:1};
   o.lines=sel.map((code,i)=>{const l={...ticketLine(code,i),state:"waiting"}; l.adv=priceFor(o,l,1); return l;});
   const adv=r3(o.lines.reduce((a,l)=>a+l.adv,0));
   // One cloud transaction: check every bike is still free (another desk may have just taken it), reserve them, take the numbers.
@@ -1573,6 +1581,8 @@ $("loginForm").onsubmit=async e=>{ e.preventDefault(); $("lgBtn").disabled=true;
   try{ await CLOUD.signIn($("lgEmail").value.trim(),$("lgPass").value); }
   catch(err){ $("lgMsg").innerHTML=`<span class="bad">${esc(LOGIN_ERR[err.code]||err.message)}</span>`; }
   finally{ $("lgBtn").disabled=false; } };
+addEventListener("error",e=>{ try{ toast("Something went wrong: "+(e.message||"error")+". Please tell support."); }catch(x){} });
+addEventListener("unhandledrejection",e=>{ try{ toast("Something went wrong: "+((e.reason&&e.reason.message)||e.reason)+". Please tell support."); }catch(x){} });
 let STARTED=false;
 (async()=>{
   try{
