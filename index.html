@@ -131,9 +131,13 @@ h2 .ar{font-weight:400;margin-left:6px}
 .brow .racts .ghost{flex:1;padding:8px 10px;background:transparent;color:var(--ink);border:1px solid var(--line);font-weight:600;font-size:13px}
 .issues.pick button[aria-pressed="true"]{background:var(--ink);color:var(--card);border-color:var(--ink)}
 .brow.wait{border-left-color:var(--info)}
-.hrs{display:flex;align-items:center;gap:6px;margin:0 0 10px;flex-wrap:wrap}.hrs span{font-weight:600;font-size:14px;margin-right:4px}
-.hrs button{min-width:46px;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--chip);font-weight:700;font-size:15px}
-.hrs button[aria-pressed="true"]{background:var(--ink);color:var(--card);border-color:var(--ink)}
+.hrs{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 0 10px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--chip)}
+.hrs:empty{display:none}
+.hrs .hl b{display:block;font-size:14px}.hrs .hl small{display:block;font-size:12px;color:var(--ink2);margin-top:2px}
+.hstep{display:flex;align-items:center;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--card)}
+.hstep button{width:40px;height:38px;border:0;background:transparent;font-size:20px;font-weight:700;color:var(--ink)}
+.hstep button:disabled{opacity:.3}
+.hstep output{min-width:52px;text-align:center;font-weight:800;font-size:16px;border-left:1px solid var(--line);border-right:1px solid var(--line);line-height:38px}
 .seg2{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}
 .seg2 button,.pm4 button,.rpm button{padding:10px 6px;border-radius:10px;border:1px solid var(--line);background:var(--chip);font-weight:600;font-size:14px}
 .seg2 button[aria-pressed="true"],.pm4 button[aria-pressed="true"],.rpm button[aria-pressed="true"]{background:var(--ink);color:var(--card);border-color:var(--ink)}
@@ -417,8 +421,8 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
   <aside class="ticket" aria-label="Order summary">
     <div class="receipt">
       <h2>Ticket</h2>
-      <div class="hrs" id="hrs" role="group" aria-label="Hours paid now"></div>
       <div id="lines"></div>
+      <div class="hrs" id="hrs" role="group" aria-label="Hours paid now"></div>
       <div class="sub"><span>Before offer</span><span class="num" id="gross">0.000</span></div>
       <div class="sub"><span>Offer savings</span><span class="num" id="save">0.000</span></div>
       <div class="tot"><span>Pay now (KWD)</span><span class="big num" id="total">0.000</span></div>
@@ -869,7 +873,8 @@ function renderNew(){
     :`<div class="empty">No bike matches “${esc(S.q)}”.</div>`;
   // ticket
   const HR=S.hours=Math.max(1,Math.min(12,parseInt(S.hours)||1));
-  $("hrs").innerHTML=`<span>Hours paid now</span>${[1,2,3,4,5].map(h=>`<button class="num" data-hrs="${h}" aria-pressed="${HR===h}">${h} h</button>`).join("")}${HR>5?`<button class="num" aria-pressed="true">${HR} h</button>`:""}<button data-hrs="${HR+1}" aria-label="One more hour">+</button>`;
+  $("hrs").innerHTML=S.sel.length?`<div class="hl"><b>Hours paid now</b><small>${HR===1?"Standard · 1st hour":`${HR} hours per bike`} + ${graceOf(null)} min grace</small></div>
+    <div class="hstep"><button data-hrs="${HR-1}" ${HR<=1?"disabled":""} aria-label="One hour less">−</button><output class="num">${HR} h</output><button data-hrs="${HR+1}" ${HR>=12?"disabled":""} aria-label="One more hour">+</button></div>`:"";
   const PC={}; lines.forEach(l=>PC[l.code]=priceFor(ctx,l,HR)); S.pc=PC;
   let G=0,N=0,html="";
   BIKES.forEach(b=>{ const cs=S.sel.filter(c=>unit(c).bikeId===b.id); if(!cs.length) return;
