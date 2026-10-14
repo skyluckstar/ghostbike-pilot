@@ -363,6 +363,7 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
 .pm4.paynow button{background:var(--info);border-color:var(--info);color:#fff;padding:14px 6px;font-size:15px}
 #phone.flash{outline:4px solid var(--lane);outline-offset:2px;animation:flash .5s 3}
 @keyframes flash{50%{outline-color:transparent}}
+.daychip[aria-pressed="true"]{background:var(--info);color:#fff;border:1px solid var(--info)}
 </style></head><body>
 <header class="bar">
   <div class="brand"><i aria-hidden="true"></i><span id="brandName">Ghost Bike</span> <span class="pilot">PILOT</span></div>
@@ -631,10 +632,10 @@ function startWatchers(){
   const need=new Set(["config","units","customers","drafts","days","orders"]); let resolveReady; const ready=new Promise(r=>resolveReady=r);
   const done=c=>{ need.delete(c); if(!need.size) resolveReady(); };
   const err=e=>toast("Cloud connection problem: "+(e.code||e.message));
-  CLOUD.watch("config",m=>{ const s=m.get("settings"), b=m.get("bikes");
+  CLOUD.watch("config",m=>{ let s=m.get("settings"), b=m.get("bikes");
+    if(s&&(s.rev||0)<MY_SET_REV){ s=null; b=null; }          // an older copy arriving after our own save: keep ours
     if(s) SET={...DEFAULT_SETTINGS,...s,offers:{...DEFAULT_SETTINGS.offers,...s.offers},company:{...DEFAULT_SETTINGS.company,...s.company},accounts:{...DEFAULT_SETTINGS.accounts,...s.accounts}};
     if(b) BIKES=b.list; COUNTERS=m.get("counters")||{};
-    PENDING_SET.forEach(p=>{ applySet(SET,p.sc); if(p.ct) SET.placeholderCounts=false; applyBikes(BIKES,p.bc); });   // our own save still on its way: keep showing it
     done("config"); scheduleRefresh(); },err);
   const listW=(col,set)=>CLOUD.watch(col,m=>{ const arr=[]; BASE[col]={}; m.forEach((v,id)=>{arr.push(v); BASE[col][id]=JSON.stringify(v);}); set(arr); done(col); scheduleRefresh(); },err);
   listW("units",a=>UNITS=a); listW("customers",a=>CUSTOMERS=a); listW("drafts",a=>DRAFTS=a.sort((x,y)=>y.at-x.at));
@@ -715,9 +716,10 @@ const iconOfBike=(id,cls="bi sm")=>bikeIcon((bikeById(id)||{}).icon,cls);
 function lineKey(o,l){
   if(l.sn) return "sn";
   if(o.nbk) return "nbk";
-  if(o.dow===0&&o.dayOffer) return "sun";
+  const day=l.day!==undefined?l.day:o.dayOffer;            // per bike: the rider on this bike qualifies
+  if(o.dow===0&&day) return "sun";
   if(o.dow===1&&l.mon) return "mon";
-  if(o.dow===3&&o.dayOffer&&l.wed) return "wed";
+  if(o.dow===3&&day&&l.wed) return "wed";
   return "none";
 }
 function priceFor(o,l,H){
@@ -736,9 +738,13 @@ function offerDetail(k,p){return {sn:"First hour free on the rider's bike",nbk:`
   mon:`${f(p.monPrice)} KWD/hour on selected bikes`,wed:`${f(p.wedPrice)} KWD/hour on selected bikes + free coffee`,none:"No offer applies"}[k];}
 // pseudo-order from the ticket on screen
 function ticketCtx(){return {nbk:S.nbk,dow:todayDow(),dayOffer:S.dayOffer,p:SET.offers};}
-function ticketLine(code,i){const u=unit(code),b=bikeById(u.bikeId);return {code,bikeId:b.id,name:b.name,rate:b.rate,mon:b.mon,wed:b.wed,sn:S.sn&&(S.snCodes||[]).includes(code)};}
+// Sunday/Wednesday: a chip on each bike shows who gets the day offer. Tap it on a bike ridden by someone who doesn't qualify.
+function dayChip(code,b){ const dow=todayDow(); if(!S.dayOffer||!(dow===0||(dow===3&&b.wed))) return "";
+  const on=!(S.dayOff||[]).includes(code), sym=dow===0?"♂ Man":"♀ Lady";
+  return `<button class="snchip daychip" data-daycode="${code}" aria-pressed="${on}" title="${dow===0?"Sunday men's":"Wednesday ladies"} offer on this bike">${sym}</button>`; }
+function ticketLine(code,i){const u=unit(code),b=bikeById(u.bikeId);return {code,bikeId:b.id,name:b.name,rate:b.rate,mon:b.mon,wed:b.wed,sn:S.sn&&(S.snCodes||[]).includes(code),day:S.dayOffer&&!(S.dayOff||[]).includes(code)};}
 /* ================= 1 · NEW RENTAL ================= */
-const S={sel:[],snCodes:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,q:"",cat:"Popular",draftId:null,
+const S={sel:[],snCodes:[],dayOff:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,q:"",cat:"Popular",draftId:null,
   pay:{mode:"single",method:"KNET",lines:[],rider:{}},pc:{}};
 const custById=id=>CUSTOMERS.find(c=>c.id===id);
 const qualifies=(g,dow)=>(dow===0&&g==="Male")||(dow===3&&g==="Female");
@@ -757,7 +763,7 @@ function renderCustomer(){
 }
 function selectCustomer(id){
   const c=custById(id); S.custId=id; S.walkin=false; $("phone").value=fmtPhone(c.phone);
-  S.dayOffer=qualifies(c.gender,todayDow()); render();
+  S.dayOffer=qualifies(c.gender,todayDow()); S.dayOff=[]; render();
 }
 function openNewCustomer(){
   const ph=normPhone($("phone").value); const NC={gender:"",tried:false};
@@ -797,7 +803,7 @@ function renderNew(){
   const dow=todayDow(), ctx=ticketCtx();
   renderCustomer();
   // day offer toggle
-  const dd={0:["Sunday men's offer",`${SET.offers.sunPct}% off all bikes`],3:["Wednesday ladies offer",`${f(SET.offers.wedPrice)} KWD/hour + free coffee`]}[dow];
+  const dd={0:["Sunday men's offer",`${SET.offers.sunPct}% off · on each bike, tap ♂ off if the rider isn't a man`],3:["Wednesday ladies offer",`${f(SET.offers.wedPrice)} KWD/hour + free coffee · on each bike, tap ♀ off if the rider isn't a lady`]}[dow];
   const g=(custById(S.custId)||{}).gender;
   $("dayOfferBox").innerHTML=dd?`<button class="toggle" id="tDay" aria-pressed="${S.dayOffer}"><span>${dd[0]}<small>${dd[1]}${g?` · customer is ${g}`:""}</small></span><span class="sw" aria-hidden="true"></span></button>`:"";
   if(!dd) S.dayOffer=false;
@@ -841,7 +847,7 @@ function renderNew(){
     const gross=r3(b.rate*cs.length), net=r3(cs.reduce((a,c)=>a+PC[c],0)); G+=gross; N+=net;
     const ks=[...new Set(lines.filter(l=>cs.includes(l.code)).map(l=>lineKey(ctx,l)))].filter(k=>k!=="none");
     html+=`<div class="line"><span class="lq"><span class="mini"><button data-b="${b.id}" data-d="-1" aria-label="Remove one ${esc(b.name)}">−</button><b class="num">${cs.length}</b><button data-b="${b.id}" data-d="1" ${cs.length>=freeCount(b.id)?"disabled":""} aria-label="Add one ${esc(b.name)}">+</button></span>${bikeIcon(b.icon,"bi sm")}${esc(b.name)}</span><span class="num">${f(net)}</span>
-      <span class="codes">${cs.map(c=>`<span class="codewrap"><button class="code num" data-swap="${c}" title="Swap for another free ${esc(b.name)}">${c}</button>${S.sn?`<button class="snchip" data-sncode="${c}" aria-pressed="${S.snCodes.includes(c)}" title="Special needs rider on this bike">SN</button>`:""}</span>`).join("")}</span>
+      <span class="codes">${cs.map(c=>`<span class="codewrap"><button class="code num" data-swap="${c}" title="Swap for another free ${esc(b.name)}">${c}</button>${dayChip(c,b)}${S.sn?`<button class="snchip" data-sncode="${c}" aria-pressed="${S.snCodes.includes(c)}" title="Special needs rider on this bike">SN</button>`:""}</span>`).join("")}</span>
       <small>1st hour × ${f(b.rate)}${ks.length?` · ${ks.map(k=>OFFER_LABEL[k]).join(", ")}`:""}</small></div>`;
   });
   $("lines").innerHTML=html||`<div class="empty">Tap a bike or scan its code to start</div>`;
@@ -955,8 +961,8 @@ async function confirmOrder(){
 /* ---------- held tickets ---------- */
 function hasContent(){return S.sel.length||S.pay.lines.length||S.custId||S.walkin;}
 function curWho(){const c=custById(S.custId);return c?c.name:S.walkin?"Walk-in":(digits($("phone").value)||"New customer");}
-function snap(){return {sel:[...S.sel],custId:S.custId,walkin:S.walkin,sn:S.sn,snCodes:[...(S.snCodes||[])],nbk:S.nbk,dayOffer:S.dayOffer,pay:JSON.parse(JSON.stringify(S.pay)),phone:$("phone").value,who:curWho(),at:NOW()};}
-function resetTicket(){Object.assign(S,{sel:[],snCodes:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,draftId:null,pay:{mode:S.pay.mode,method:SET.methods[0],lines:[],rider:{}}});$("phone").value="";}
+function snap(){return {sel:[...S.sel],custId:S.custId,walkin:S.walkin,sn:S.sn,snCodes:[...(S.snCodes||[])],dayOff:[...(S.dayOff||[])],nbk:S.nbk,dayOffer:S.dayOffer,pay:JSON.parse(JSON.stringify(S.pay)),phone:$("phone").value,who:curWho(),at:NOW()};}
+function resetTicket(){Object.assign(S,{sel:[],snCodes:[],dayOff:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,draftId:null,pay:{mode:S.pay.mode,method:SET.methods[0],lines:[],rider:{}}});$("phone").value="";}
 async function holdCurrent(forceNew){
   if(hasContent()){
     const id=S.draftId||numFmt("draft",(await allocNos({draft:1})).draft);
@@ -973,7 +979,7 @@ async function resumeDraft(id){
   const d=DRAFTS.find(x=>x.id===id); if(!d) return;
   DRAFTS=DRAFTS.filter(x=>x.id!==id);
   d.sel.forEach(c=>{const u=unit(c); if(u&&u.st==="draft"&&(u.draft===id||!u.draft)){ u.st="free"; u.draft=null; }});
-  Object.assign(S,{sel:d.sel.filter(c=>unit(c)&&unit(c).st==="free"),custId:d.custId,walkin:d.walkin,sn:d.sn,snCodes:d.snCodes||[],nbk:d.nbk,dayOffer:d.dayOffer,pay:d.pay,draftId:id});
+  Object.assign(S,{sel:d.sel.filter(c=>unit(c)&&unit(c).st==="free"),custId:d.custId,walkin:d.walkin,sn:d.sn,snCodes:d.snCodes||[],dayOff:d.dayOff||[],nbk:d.nbk,dayOffer:d.dayOffer,pay:d.pay,draftId:id});
   $("phone").value=d.phone||""; persist("drafts","units");
   showView("new"); refreshAll(); toast(`${id} resumed where you left off.`);
 }
@@ -1452,7 +1458,7 @@ function renderSettings(){
 }
 // Settings saves send only the fields changed on this desk, merged into the latest cloud copy,
 // so two people editing Settings on different desks never undo each other's changes.
-let PENDING_SET=[];
+let MY_SET_REV=0;
 const changed=el=>el.type==="checkbox"?el.checked!==el.defaultChecked:el.tagName==="SELECT"?[...el.options].some(o=>o.selected!==o.defaultSelected):el.value!==el.defaultValue;
 function collectChanges(){
   const sc=[], bc={}; let err="";
@@ -1484,13 +1490,15 @@ async function saveAllSettings(){
     Object.assign(b,ch); const live=syncUnits(b); if(live>b.count) notes.push(`${b.name}: ${live-b.count} bike(s) are out or reserved, so ${live} stay until they come back`); });
   applySet(SET,sc); if(countsTouched) SET.placeholderCounts=false;
   persist("units");
-  const pend={sc,bc:JSON.parse(JSON.stringify(bc)),ct:countsTouched}; PENDING_SET.push(pend);
-  try{ await withTimeout(CLOUD.txn(async t=>{ const sv=(await t.get("config","settings"))||clean(SET), bv=(await t.get("config","bikes"))||{list:clean(BIKES)};
-      applySet(sv,sc); if(countsTouched) sv.placeholderCounts=false;
+  try{ const res=await withTimeout(CLOUD.txn(async t=>{ const sv=(await t.get("config","settings"))||clean(SET), bv=(await t.get("config","bikes"))||{list:clean(BIKES)};
+      applySet(sv,sc); if(countsTouched) sv.placeholderCounts=false; sv.rev=(sv.rev||0)+1;
       BIKES.forEach(b=>{ if(!bv.list.some(x=>x.id===b.id)) bv.list.push(clean(b)); }); applyBikes(bv.list,bc);
-      t.set("config","settings",clean(sv)); t.set("config","bikes",{list:clean(bv.list)}); }),8000); }
+      t.set("config","settings",clean(sv)); t.set("config","bikes",{list:clean(bv.list)}); return {sv,bv}; }),8000);
+    // show exactly what is now in the cloud: our change merged with any other desk's
+    MY_SET_REV=res.sv.rev;
+    SET={...DEFAULT_SETTINGS,...res.sv,offers:{...DEFAULT_SETTINGS.offers,...res.sv.offers},company:{...DEFAULT_SETTINGS.company,...res.sv.company},accounts:{...DEFAULT_SETTINGS.accounts,...res.sv.accounts}};
+    BIKES=res.bv.list; }
   catch(e){ persist("settings","bikes"); }   // offline: save this desk's copy, synced later
-  finally{ setTimeout(()=>{ const i=PENDING_SET.indexOf(pend); if(i>=0) PENDING_SET.splice(i,1); },4000); }   // kept until the cloud copy has surely arrived
   SETDIRTY=false; refreshAll(); renderSettings();
   toast(notes.length?"Saved. "+notes.join(". "):"Saved. Bikes, prices and settings are live on every desk.");
   return notes;
@@ -1525,13 +1533,14 @@ document.addEventListener("click",e=>{
   // new rental
   if(x=c("[data-b]")) return addOrRemove(x.dataset.b,Number(x.dataset.d));
   if(x=c("[data-add]")) return addOrRemove(x.dataset.add,1);
-  if(x=c("[data-swap]")){ const u=unit(x.dataset.swap), nx=nextFree(u.bikeId); if(nx){S.sel[S.sel.indexOf(u.code)]=nx.code; S.snCodes=(S.snCodes||[]).map(v=>v===u.code?nx.code:v); render();toast(`${u.code} swapped for ${nx.code}`);} else toast("No other free bike of this type."); return; }
+  if(x=c("[data-swap]")){ const u=unit(x.dataset.swap), nx=nextFree(u.bikeId); if(nx){S.sel[S.sel.indexOf(u.code)]=nx.code; S.snCodes=(S.snCodes||[]).map(v=>v===u.code?nx.code:v); S.dayOff=(S.dayOff||[]).map(v=>v===u.code?nx.code:v); render();toast(`${u.code} swapped for ${nx.code}`);} else toast("No other free bike of this type."); return; }
   if(x=c("[data-cat]")){ S.cat=x.dataset.cat; S.q=""; $("bq").value=""; return render(); }
   if(x=c("[data-cust]")) return selectCustomer(x.dataset.cust);
   if(c("[data-cust-clear]")){ S.custId=null; S.walkin=false; S.dayOffer=false; $("phone").value=""; render(); return $("phone").focus(); }
   if(c("[data-newcust]")) return openNewCustomer();
   if(c("[data-walkin]")){ S.walkin=true; S.custId=null; return render(); }
-  if(c("#tDay")){ S.dayOffer=!S.dayOffer; return render(); }
+  if(c("#tDay")){ S.dayOffer=!S.dayOffer; S.dayOff=[]; return render(); }
+  if(x=c("[data-daycode]")){ const k=x.dataset.daycode; S.dayOff=(S.dayOff||[]).includes(k)?S.dayOff.filter(v=>v!==k):[...(S.dayOff||[]),k]; return render(); }
   if(c("#tSN")){ S.sn=!S.sn; S.snCodes=S.sn&&S.sel.length?[S.sel[0]]:[]; if(S.sn&&S.sel.length>1) toast("Special needs is on for "+S.sel[0]+". Tap SN on another bike to move it."); return render(); }
   if(x=c("[data-sncode]")){ const k=x.dataset.sncode; S.snCodes=S.snCodes.includes(k)?S.snCodes.filter(v=>v!==k):[...S.snCodes,k]; return render(); }
   if(c("#tNBK")){ S.nbk=!S.nbk; return render(); }
