@@ -55,3 +55,10 @@ Unchanged: New rental → Delivery desk → Settle payment; Day report → Close
 ## Security rules (already pasted in Firebase → Firestore → Rules)
 
 Only signed-in staff can read or write. A copy is in `firestore.rules`.
+
+## Managers (Day report and Settings)
+
+- Manager logins: `feras.kastero@hotmail.com`, `ma.handlle@outlook.com`. They open Day report and Settings directly.
+- Every other login (e.g. `karim@ghostbike.kw`) is a staff desk: Day report and Settings show a lock. A manager can unlock them on that desk with their own email and password; they lock again when you leave the screen, press Lock, after 10 idle minutes, or when the app is closed.
+- The Firebase rules (`firestore.rules`) enforce the same: only managers can change settings, prices and bikes, or see cash counts.
+- To add or remove a manager, both the list in `index.html` and the list in the Firebase rules must change: ask support.

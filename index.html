@@ -131,6 +131,9 @@ h2 .ar{font-weight:400;margin-left:6px}
 .brow .racts .ghost{flex:1;padding:8px 10px;background:transparent;color:var(--ink);border:1px solid var(--line);font-weight:600;font-size:13px}
 .issues.pick button[aria-pressed="true"]{background:var(--ink);color:var(--card);border-color:var(--ink)}
 .brow.wait{border-left-color:var(--info)}
+.hrs{display:flex;align-items:center;gap:6px;margin:0 0 10px;flex-wrap:wrap}.hrs span{font-weight:600;font-size:14px;margin-right:4px}
+.hrs button{min-width:46px;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--chip);font-weight:700;font-size:15px}
+.hrs button[aria-pressed="true"]{background:var(--ink);color:var(--card);border-color:var(--ink)}
 .seg2{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}
 .seg2 button,.pm4 button,.rpm button{padding:10px 6px;border-radius:10px;border:1px solid var(--line);background:var(--chip);font-weight:600;font-size:14px}
 .seg2 button[aria-pressed="true"],.pm4 button[aria-pressed="true"],.rpm button[aria-pressed="true"]{background:var(--ink);color:var(--card);border-color:var(--ink)}
@@ -364,6 +367,8 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
 #phone.flash{outline:4px solid var(--lane);outline-offset:2px;animation:flash .5s 3}
 @keyframes flash{50%{outline-color:transparent}}
 .daychip[aria-pressed="true"]{background:var(--info);color:#fff;border:1px solid var(--info)}
+.tab.locked::after{content:" 🔒";font-size:12px}
+.bkbtn.mgr{background:var(--lane);color:var(--laneInk)}
 </style></head><body>
 <header class="bar">
   <div class="brand"><i aria-hidden="true"></i><span id="brandName">Ghost Bike</span> <span class="pilot">PILOT</span></div>
@@ -377,7 +382,7 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
     <button class="tab" role="tab" aria-selected="false" data-view="report">Day report</button>
     <button class="tab" role="tab" aria-selected="false" data-view="settings">Settings</button>
   </nav>
-  <div class="day"><span id="netLbl" class="net"></span><span id="todayLbl"></span><span id="userLbl"></span><button class="bkbtn" id="backupNow" title="Save a backup now">Backup</button><button class="bkbtn" data-signout>Sign out</button></div>
+  <div class="day"><span id="netLbl" class="net"></span><span id="todayLbl"></span><span id="userLbl"></span><span id="mgrLbl"></span><button class="bkbtn" id="backupNow" title="Save a backup now">Backup</button><button class="bkbtn" data-signout>Sign out</button></div>
 </header>
 <div id="banner" class="banner" hidden></div>
 
@@ -412,11 +417,12 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
   <aside class="ticket" aria-label="Order summary">
     <div class="receipt">
       <h2>Ticket</h2>
+      <div class="hrs" id="hrs" role="group" aria-label="Hours paid now"></div>
       <div id="lines"></div>
       <div class="sub"><span>Before offer</span><span class="num" id="gross">0.000</span></div>
       <div class="sub"><span>Offer savings</span><span class="num" id="save">0.000</span></div>
       <div class="tot"><span>Pay now (KWD)</span><span class="big num" id="total">0.000</span></div>
-      <div class="lnote">Advance covers the first hour per bike, with a 30-minute return grace. The delivery desk starts the clock at pickup; extra hours are paid at the front after return.</div>
+      <div class="lnote">Pay now covers the hours chosen above, per bike, plus a 30-minute return grace. The clock starts at pickup. Extra hours are paid at the front after return; unused paid hours are refunded in cash.</div>
     </div>
     <div class="payzone">
       <h2>Payment <span class="ar">الدفع</span></h2>
@@ -482,7 +488,8 @@ const pad=(n,w=4)=>String(n).padStart(w,"0");
 const hm=ms=>{const m=Math.max(0,Math.floor(ms/MIN));return `${Math.floor(m/60)}:${String(m%60).padStart(2,"0")}`;};
 // Chargeable hours: whole minutes; the first hour has a return grace (default 30 min, so up to 1:30 = 1 hour).
 // Past the grace, every started hour counts: 1:31 = 2 h, 2:10 = 3 h.
-const chg=(ms,grace=30)=>{ const m=Math.max(0,Math.floor(ms/MIN)); return m<=60+grace?1:Math.ceil(m/60); };
+const chg=(ms,grace=30,paidH=1)=>{ const m=Math.max(0,Math.floor(ms/MIN)); let H=m<=60+grace?1:Math.ceil(m/60); if(paidH>1&&m<=paidH*60+grace) H=Math.min(H,paidH); return H; };
+const paidOf=l=>Math.max(1,+(l&&l.paidH)||1);
 const graceOf=o=>(o&&o.p&&o.p.returnGrace!=null)?+o.p.returnGrace:+(SET&&SET.offers.returnGrace!=null?SET.offers.returnGrace:30);
 const clock=t=>new Date(t).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
 const dt=t=>new Date(t).toLocaleString([],{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
@@ -507,7 +514,7 @@ const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturda
 /* ---------- defaults (from the live Odoo product list and pricelists, 30 Sep 2026) ---------- */
 const DEFAULT_SETTINGS={
   company:{name:"Ghost Bike",ar:"جوست بايك",line:"Bicycle rental · Kuwait",cashier:"Counter 1"},
-  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,returnGrace:30},
+  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:30,returnGrace:30},
   methods:["KNET","Cash","Card","Pay link"],
   accounts:{journal:"",revenue:"","KNET":"","Cash":"","Card":"","Pay link":""},
   countryCode:"965", testDay:"", backupHours:12
@@ -541,21 +548,38 @@ function saveMeta(){ try{ localStorage.setItem("gb-meta",JSON.stringify(META)); 
 
 /* ---------- cloud connector (Firebase). Tests swap in window.MOCK_CLOUD ---------- */
 const clean=o=>JSON.parse(JSON.stringify(o??null));
+function fsOps(F,db){ const ref=(c,i)=>F.doc(db,c,i);
+  return {
+    watch:(col,cb,onErr)=>F.onSnapshot(F.collection(db,col),{includeMetadataChanges:false},s=>{const m=new Map(); s.forEach(d=>m.set(d.id,d.data())); cb(m);},onErr),
+    write:ops=>{ const b=F.writeBatch(db); ops.forEach(o=>o.t==="del"?b.delete(ref(o.col,o.id)):b.set(ref(o.col,o.id),o.data)); return b.commit(); },
+    txn:fn=>F.runTransaction(db,async T=>fn({ get:async(c,i)=>{const s=await T.get(ref(c,i)); return s.exists()?s.data():null;},
+      set:(c,i,d)=>T.set(ref(c,i),d), del:(c,i)=>T.delete(ref(c,i)) })) };
+}
 function firebaseCloud(cfg){
   const F=window.FBSDK, app=F.initializeApp(cfg), auth=F.getAuth(app);
   const db=F.initializeFirestore(app,{localCache:F.persistentLocalCache({tabManager:F.persistentMultipleTabManager()})});
-  const ref=(c,i)=>F.doc(db,c,i);
   return {
     onAuth:cb=>F.onAuthStateChanged(auth,u=>cb(u?{email:u.email,uid:u.uid}:null)),
     signIn:async(e,p)=>{ await F.setPersistence(auth,F.browserLocalPersistence); await F.signInWithEmailAndPassword(auth,e,p); },
     signOut:()=>F.signOut(auth),
-    watch:(col,cb,onErr)=>F.onSnapshot(F.collection(db,col),{includeMetadataChanges:false},s=>{const m=new Map(); s.forEach(d=>m.set(d.id,d.data())); cb(m);},onErr),
-    write:ops=>{ const b=F.writeBatch(db); ops.forEach(o=>o.t==="del"?b.delete(ref(o.col,o.id)):b.set(ref(o.col,o.id),o.data)); return b.commit(); },
-    txn:fn=>F.runTransaction(db,async T=>fn({ get:async(c,i)=>{const s=await T.get(ref(c,i)); return s.exists()?s.data():null;},
-      set:(c,i,d)=>T.set(ref(c,i),d), del:(c,i)=>T.delete(ref(c,i)) }))
+    ...fsOps(F,db),
+    // A manager signs in on a staff desk: a separate, temporary session that is never remembered by the browser.
+    elevate:async(email,pass)=>{ const app2=F.initializeApp(cfg,"manager-"+Date.now()), a2=F.getAuth(app2);
+      try{ await F.setPersistence(a2,F.inMemoryPersistence); await F.signInWithEmailAndPassword(a2,email,pass); }
+      catch(e){ F.deleteApp(app2).catch(()=>{}); throw e; }
+      const db2=F.initializeFirestore(app2,{localCache:F.memoryLocalCache()});
+      return {email:a2.currentUser.email,...fsOps(F,db2),close:async()=>{ try{await F.signOut(a2);}catch(e){} try{await F.deleteApp(app2);}catch(e){} }}; }
   };
 }
 let CLOUD=null;
+// Managers: may open Day report and Settings and change prices, bikes and settings. Must match firestore.rules.
+const ADMIN_EMAILS=["feras.kastero@hotmail.com","ma.handlle@outlook.com"];
+const isAdminEmail=e=>!!e&&ADMIN_EMAILS.includes(String(e).trim().toLowerCase());
+const signedInAdmin=()=>isAdminEmail(CURUSER&&CURUSER.email);
+let ELEV=null;                       // a manager unlocked the manager screens on a staff desk
+const isAdmin=()=>signedInAdmin()||!!ELEV;
+const adminCloud=()=>signedInAdmin()?CLOUD:(ELEV&&ELEV.cloud);
+const MGR_MIN=10;                    // manager screens lock after this many idle minutes
 const withTimeout=(p,ms)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(Object.assign(new Error("No connection"),{code:"unavailable"})),ms))]);
 const devTag=()=>((CURUSER&&CURUSER.email)||"X")[0].toUpperCase();
 const offlineNo=()=>devTag()+Date.now().toString(36).toUpperCase().slice(-6);
@@ -577,17 +601,18 @@ function diffOps(col,list){ const ops=[], seen=new Set();
   list.forEach(x=>{ const id=keyOf[col](x), j=JSON.stringify(clean(x)); seen.add(id); if(BASE[col][id]!==j){ ops.push({t:"set",col,id,data:clean(x)}); BASE[col][id]=j; } });
   if(col==="drafts") Object.keys(BASE.drafts).forEach(id=>{ if(!seen.has(id)){ ops.push({t:"del",col,id}); delete BASE.drafts[id]; } });
   return ops; }
-function send(ops){ if(!ops.length) return; for(let i=0;i<ops.length;i+=400) CLOUD.write(ops.slice(i,i+400)).catch(e=>toast("Cloud save failed: "+e.message)); }
+function send(ops,cl=CLOUD){ if(!ops.length) return; for(let i=0;i<ops.length;i+=400) cl.write(ops.slice(i,i+400)).catch(e=>toast(e.code==="permission-denied"?"Only a manager can change this.":"Cloud save failed: "+e.message)); }
 function persist(...keys){
-  const ops=[];
+  const ops=[], aops=[];
   keys.forEach(k=>{
     if(k==="units"||k==="customers"||k==="drafts") ops.push(...diffOps(k,k==="units"?UNITS:k==="customers"?CUSTOMERS:DRAFTS));
-    else if(k==="days") Object.entries(DAYS_LOG).forEach(([d,v])=>{ const j=JSON.stringify(clean(v)); if(BASE.days[d]!==j){ ops.push({t:"set",col:"days",id:d,data:clean(v)}); BASE.days[d]=j; } });
-    else if(k==="settings") ops.push({t:"set",col:"config",id:"settings",data:clean(SET)});
-    else if(k==="bikes") ops.push({t:"set",col:"config",id:"bikes",data:{list:clean(BIKES)}});
+    else if(k==="days") Object.entries(DAYS_LOG).forEach(([d,v])=>{ const j=JSON.stringify(clean(v)); if(BASE.days[d]!==j){ aops.push({t:"set",col:"days",id:d,data:clean(v)}); BASE.days[d]=j; } });
+    else if(k==="settings") aops.push({t:"set",col:"config",id:"settings",data:clean(SET)});
+    else if(k==="bikes") aops.push({t:"set",col:"config",id:"bikes",data:{list:clean(BIKES)}});
     else if(k==="meta") saveMeta();
   });
   send(ops);
+  if(aops.length){ const ac=adminCloud(); if(ac) send(aops,ac); else toast("Only a manager can change this."); }
 }
 const stripOrder=o=>{ const c=clean(o); (c.lines||[]).forEach(l=>delete l.pick_sel); return c; };
 // Merges this desk's changes into the latest cloud copy, line by line, so two desks working on one order never erase each other.
@@ -628,8 +653,10 @@ function scheduleRefresh(){ clearTimeout(refreshTimer); refreshTimer=setTimeout(
   if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&!STATIC.includes(a.id)&&!$("dlg").contains(a)){ refreshWanted=true; return; }   // never wipe what someone is typing
   if(typeof refreshAll==="function"&&SET&&BIKES) refreshAll(); },60); }
 document.addEventListener("focusout",()=>{ if(refreshWanted){ refreshWanted=false; scheduleRefresh(); } });
+function watchDays(cl){ return cl.watch("days",m=>{ DAYS_LOG={}; BASE.days={}; m.forEach((v,id)=>{DAYS_LOG[id]=v; BASE.days[id]=JSON.stringify(v);}); scheduleRefresh(); },
+  e=>{ if(e&&e.code!=="permission-denied") toast("Cloud connection problem: "+(e.code||e.message)); }); }
 function startWatchers(){
-  const need=new Set(["config","units","customers","drafts","days","orders"]); let resolveReady; const ready=new Promise(r=>resolveReady=r);
+  const need=new Set(["config","units","customers","drafts","orders"]); let resolveReady; const ready=new Promise(r=>resolveReady=r);
   const done=c=>{ need.delete(c); if(!need.size) resolveReady(); };
   const err=e=>toast("Cloud connection problem: "+(e.code||e.message));
   CLOUD.watch("config",m=>{ let s=m.get("settings"), b=m.get("bikes");
@@ -639,7 +666,7 @@ function startWatchers(){
     done("config"); scheduleRefresh(); },err);
   const listW=(col,set)=>CLOUD.watch(col,m=>{ const arr=[]; BASE[col]={}; m.forEach((v,id)=>{arr.push(v); BASE[col][id]=JSON.stringify(v);}); set(arr); done(col); scheduleRefresh(); },err);
   listW("units",a=>UNITS=a); listW("customers",a=>CUSTOMERS=a); listW("drafts",a=>DRAFTS=a.sort((x,y)=>y.at-x.at));
-  CLOUD.watch("days",m=>{ DAYS_LOG={}; BASE.days={}; m.forEach((v,id)=>{DAYS_LOG[id]=v; BASE.days[id]=JSON.stringify(v);}); done("days"); scheduleRefresh(); },err);
+  if(signedInAdmin()) watchDays(CLOUD);
   CLOUD.watch("orders",m=>{
     LAST_ORD=m; const old=new Map(ORDERS.map(o=>[o.id,o])), next=[];
     m.forEach((v,id)=>{ BASE.orders[id]=JSON.stringify(v);
@@ -744,7 +771,7 @@ function dayChip(code,b){ const dow=todayDow(); if(!S.dayOffer||!(dow===0||(dow=
   return `<button class="snchip daychip" data-daycode="${code}" aria-pressed="${on}" title="${dow===0?"Sunday men's":"Wednesday ladies"} offer on this bike">${sym}</button>`; }
 function ticketLine(code,i){const u=unit(code),b=bikeById(u.bikeId);return {code,bikeId:b.id,name:b.name,rate:b.rate,mon:b.mon,wed:b.wed,sn:S.sn&&(S.snCodes||[]).includes(code),day:S.dayOffer&&!(S.dayOff||[]).includes(code)};}
 /* ================= 1 · NEW RENTAL ================= */
-const S={sel:[],snCodes:[],dayOff:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,q:"",cat:"Popular",draftId:null,
+const S={hours:1,sel:[],snCodes:[],dayOff:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,q:"",cat:"Popular",draftId:null,
   pay:{mode:"single",method:"KNET",lines:[],rider:{}},pc:{}};
 const custById=id=>CUSTOMERS.find(c=>c.id===id);
 const qualifies=(g,dow)=>(dow===0&&g==="Male")||(dow===3&&g==="Female");
@@ -841,14 +868,16 @@ function renderNew(){
       <span class="avail ${cls}">${fc===0?"None free":left+" free"}</span></button>`;}).join("")
     :`<div class="empty">No bike matches “${esc(S.q)}”.</div>`;
   // ticket
-  const PC={}; lines.forEach(l=>PC[l.code]=priceFor(ctx,l,1)); S.pc=PC;
+  const HR=S.hours=Math.max(1,Math.min(12,parseInt(S.hours)||1));
+  $("hrs").innerHTML=`<span>Hours paid now</span>${[1,2,3,4,5].map(h=>`<button class="num" data-hrs="${h}" aria-pressed="${HR===h}">${h} h</button>`).join("")}${HR>5?`<button class="num" aria-pressed="true">${HR} h</button>`:""}<button data-hrs="${HR+1}" aria-label="One more hour">+</button>`;
+  const PC={}; lines.forEach(l=>PC[l.code]=priceFor(ctx,l,HR)); S.pc=PC;
   let G=0,N=0,html="";
   BIKES.forEach(b=>{ const cs=S.sel.filter(c=>unit(c).bikeId===b.id); if(!cs.length) return;
-    const gross=r3(b.rate*cs.length), net=r3(cs.reduce((a,c)=>a+PC[c],0)); G+=gross; N+=net;
+    const gross=r3(b.rate*HR*cs.length), net=r3(cs.reduce((a,c)=>a+PC[c],0)); G+=gross; N+=net;
     const ks=[...new Set(lines.filter(l=>cs.includes(l.code)).map(l=>lineKey(ctx,l)))].filter(k=>k!=="none");
     html+=`<div class="line"><span class="lq"><span class="mini"><button data-b="${b.id}" data-d="-1" aria-label="Remove one ${esc(b.name)}">−</button><b class="num">${cs.length}</b><button data-b="${b.id}" data-d="1" ${cs.length>=freeCount(b.id)?"disabled":""} aria-label="Add one ${esc(b.name)}">+</button></span>${bikeIcon(b.icon,"bi sm")}${esc(b.name)}</span><span class="num">${f(net)}</span>
       <span class="codes">${cs.map(c=>`<span class="codewrap"><button class="code num" data-swap="${c}" title="Swap for another free ${esc(b.name)}">${c}</button>${dayChip(c,b)}${S.sn?`<button class="snchip" data-sncode="${c}" aria-pressed="${S.snCodes.includes(c)}" title="Special needs rider on this bike">SN</button>`:""}</span>`).join("")}</span>
-      <small>1st hour × ${f(b.rate)}${ks.length?` · ${ks.map(k=>OFFER_LABEL[k]).join(", ")}`:""}</small></div>`;
+      <small>${HR===1?"1st hour":HR+" h"} × ${f(b.rate)}${ks.length?` · ${ks.map(k=>OFFER_LABEL[k]).join(", ")}`:""}</small></div>`;
   });
   $("lines").innerHTML=html||`<div class="empty">Tap a bike or scan its code to start</div>`;
   $("gross").textContent=f(G); $("save").textContent=f(G-N); $("total").textContent=f(N);
@@ -928,7 +957,7 @@ async function confirmOrder(){
   const c=custById(S.custId), dow=todayDow(), sel=[...S.sel], draftId=S.draftId;
   const o={id:"",created:NOW(),custId:c?c.id:null,who:c?c.name:"Walk-in",phone:c?c.phone:"",gender:c?c.gender:"",
     dow,dayOffer:S.dayOffer,nbk:S.nbk,p:{...SET.offers},lines:[],invoices:[],voucher:null,by:(CURUSER||{}).email||"",rev:1};
-  o.lines=sel.map((code,i)=>{const l={...ticketLine(code,i),state:"waiting"}; l.adv=priceFor(o,l,1); return l;});
+  const PH=S.hours||1; o.lines=sel.map((code,i)=>{const l={...ticketLine(code,i),state:"waiting",paidH:PH}; l.adv=priceFor(o,l,PH); return l;});
   const adv=r3(o.lines.reduce((a,l)=>a+l.adv,0));
   // One cloud transaction: check every bike is still free (another desk may have just taken it), reserve them, take the numbers.
   let nos;
@@ -947,7 +976,7 @@ async function confirmOrder(){
   sel.forEach(code=>{ const u=unit(code); if(u){ u.st="held"; u.draft=null; } });
   persist("units");
   const pays=S.pay.mode==="riders"?o.lines.filter(l=>l.adv>0.0005).map(l=>({m:S.pay.rider[l.code],amt:l.adv})):S.pay.lines.map(p=>({...p}));
-  if(adv>0.0005) newInvoice(numFmt("inv",nos.inv),o,"Advance · 1st hour",o.lines.map(l=>l.code),adv,pays,l=>({code:l.code,name:l.name,desc:l.sn?"1st hour · Special needs (free)":"1st hour (advance)",amt:l.adv}));
+  if(adv>0.0005) newInvoice(numFmt("inv",nos.inv),o,PH===1?"Advance · 1st hour":`Advance · ${PH} hours`,o.lines.map(l=>l.code),adv,pays,l=>({code:l.code,name:l.name,desc:PH===1?(l.sn?"1st hour · Special needs (free)":"1st hour (advance)"):`${PH} hours paid in advance${l.sn?" · 1st hour free (special needs)":""}`,amt:l.adv}));
   if(o.lines.some(l=>lineKey(o,l)==="wed")){ const A="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; let v=""; for(let i=0;i<6;i++) v+=A[Math.floor(Math.random()*A.length)]; o.voucher="CAFE-"+v; }
   ORDERS.unshift(o); BASE.orders[o.id]=undefined; CLOUD.write([{t:"set",col:"orders",id:o.id,data:clean(o)}]).catch(e=>toast("Cloud save failed: "+e.message));
   if(draftId){ DRAFTS=DRAFTS.filter(d=>d.id!==draftId); persist("drafts"); }
@@ -961,8 +990,8 @@ async function confirmOrder(){
 /* ---------- held tickets ---------- */
 function hasContent(){return S.sel.length||S.pay.lines.length||S.custId||S.walkin;}
 function curWho(){const c=custById(S.custId);return c?c.name:S.walkin?"Walk-in":(digits($("phone").value)||"New customer");}
-function snap(){return {sel:[...S.sel],custId:S.custId,walkin:S.walkin,sn:S.sn,snCodes:[...(S.snCodes||[])],dayOff:[...(S.dayOff||[])],nbk:S.nbk,dayOffer:S.dayOffer,pay:JSON.parse(JSON.stringify(S.pay)),phone:$("phone").value,who:curWho(),at:NOW()};}
-function resetTicket(){Object.assign(S,{sel:[],snCodes:[],dayOff:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,draftId:null,pay:{mode:S.pay.mode,method:SET.methods[0],lines:[],rider:{}}});$("phone").value="";}
+function snap(){return {hours:S.hours,sel:[...S.sel],custId:S.custId,walkin:S.walkin,sn:S.sn,snCodes:[...(S.snCodes||[])],dayOff:[...(S.dayOff||[])],nbk:S.nbk,dayOffer:S.dayOffer,pay:JSON.parse(JSON.stringify(S.pay)),phone:$("phone").value,who:curWho(),at:NOW()};}
+function resetTicket(){Object.assign(S,{hours:1,sel:[],snCodes:[],dayOff:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,draftId:null,pay:{mode:S.pay.mode,method:SET.methods[0],lines:[],rider:{}}});$("phone").value="";}
 async function holdCurrent(forceNew){
   if(hasContent()){
     const id=S.draftId||numFmt("draft",(await allocNos({draft:1})).draft);
@@ -979,7 +1008,7 @@ async function resumeDraft(id){
   const d=DRAFTS.find(x=>x.id===id); if(!d) return;
   DRAFTS=DRAFTS.filter(x=>x.id!==id);
   d.sel.forEach(c=>{const u=unit(c); if(u&&u.st==="draft"&&(u.draft===id||!u.draft)){ u.st="free"; u.draft=null; }});
-  Object.assign(S,{sel:d.sel.filter(c=>unit(c)&&unit(c).st==="free"),custId:d.custId,walkin:d.walkin,sn:d.sn,snCodes:d.snCodes||[],dayOff:d.dayOff||[],nbk:d.nbk,dayOffer:d.dayOffer,pay:d.pay,draftId:id});
+  Object.assign(S,{hours:d.hours||1,sel:d.sel.filter(c=>unit(c)&&unit(c).st==="free"),custId:d.custId,walkin:d.walkin,sn:d.sn,snCodes:d.snCodes||[],dayOff:d.dayOff||[],nbk:d.nbk,dayOffer:d.dayOffer,pay:d.pay,draftId:id});
   $("phone").value=d.phone||""; persist("drafts","units");
   showView("new"); refreshAll(); toast(`${id} resumed where you left off.`);
 }
@@ -1007,18 +1036,19 @@ function lineByCode(c,openOnly){for(const o of ORDERS)for(const l of o.lines)if(
 const orderOf=l=>ORDERS.find(o=>o.lines.includes(l));
 const DF={q:"",st:"all"};
 const DST=[["all","All"],["waiting","Waiting pickup"],["riding","Riding"],["over","Past grace"]];
-function lineMatchesSt(l,st){ if(st==="all") return OPEN.includes(l.state); if(st==="over") return l.state==="riding"&&Math.floor((NOW()-l.pick)/MIN)>60+graceOf(orderOf(l)); return l.state===st; }
+function lineMatchesSt(l,st){ if(st==="all") return OPEN.includes(l.state); if(st==="over") return l.state==="riding"&&Math.floor((NOW()-l.pick)/MIN)>paidOf(l)*60+graceOf(orderOf(l)); return l.state===st; }
 function matchQ(q,id,who,phone,codes){ q=q.trim().toLowerCase(); if(!q) return true; const d=digits(q);
   return id.toLowerCase().includes(q)||who.toLowerCase().includes(q)||(d.length>=3&&digits(phone).includes(d))||codes.some(c=>c.toLowerCase().includes(q)); }
 function lineStatus(l){
-  const g=graceOf(orderOf(l)), el=l.pick?NOW()-l.pick:0, left=l.pick?l.pick+60*MIN-NOW():0, gl=l.pick?l.pick+(60+g)*MIN-NOW():0;
+  const g=graceOf(orderOf(l)), P=paidOf(l), el=l.pick?NOW()-l.pick:0, left=l.pick?l.pick+P*60*MIN-NOW():0, gl=l.pick?l.pick+(P*60+g)*MIN-NOW():0;
   switch(l.state){
     case "waiting": return {cls:"wait",txt:"Waiting for pickup",sub:"clock not started"};
-    case "riding": return left>0?{cls:"",txt:`${hm(left)} left in 1st hour`,sub:`+${g} min grace after`}
-      : gl>0?{cls:"soon",txt:`In grace · ${hm(gl)} left`,sub:"still 1 hour"}
-      : {cls:"over",txt:`Past grace by ${hm(-gl)}`,sub:`now ${chg(el,g)} chargeable h`};
+    case "riding": return left>0?{cls:"",txt:`${hm(left)} left in ${P===1?"1st hour":P+" paid hours"}`,sub:`+${g} min grace after`}
+      : gl>0?{cls:"soon",txt:`In grace · ${hm(gl)} left`,sub:`still ${P} hour${P>1?"s":""}`}
+      : {cls:"over",txt:`Past grace by ${hm(-gl)}`,sub:`now ${chg(el,g,P)} chargeable h`};
     case "toSettle": return {cls:"done",txt:"Received",sub:`customer to pay ${f(l.extra)} at front`};
     case "cancelPending": return {cls:"done",txt:"Cancelled",sub:`refund ${f(l.adv)} at front`};
+    case "refundPending": return {cls:"done",txt:"Received early",sub:`refund ${f(l.refund)} at front`};
     case "cancelled": return {cls:"done",txt:"Cancelled",sub:"refunded"};
     default: return {cls:"done",txt:"Closed",sub:l.H?`${l.H} h`:""};
   }
@@ -1036,7 +1066,7 @@ function renderBoard(){
       ${o.lines.map(l=>{ const s=lineStatus(l), el=l.pick?(l.ret||NOW())-l.pick:0;
         const btns=l.state==="waiting"?`<div class="racts"><button data-pickup="${l.code}">Confirm pickup</button><span><button class="ghost" data-cancel="${l.code}">Cancel</button></span></div>`
           :l.state==="riding"?`<div class="racts"><button data-ret="${l.code}">Confirm return</button><span><button class="ghost" data-swapride="${l.code}">Swap bike</button><button class="ghost" data-cancel="${l.code}">Cancel${NOW()-l.pick<o.p.graceMin*MIN?` · ${o.p.graceMin-Math.floor((NOW()-l.pick)/MIN)}m`:""}</button></span></div>`:`<span></span>`;
-        return `<div class="brow ${s.cls}"><div class="bn">${iconOfBike(l.bikeId)}<div><b class="num">${l.code}</b> ${esc(l.name)}${l.sn?' <span class="sn">SN</span>':""}<small>${l.pick?`picked up ${clock(l.pick)}`:"paid, not picked up"}${l.swaps?.length?` · swapped from ${l.swaps.map(x=>x.from).join(", ")}`:""}</small></div></div>
+        return `<div class="brow ${s.cls}"><div class="bn">${iconOfBike(l.bikeId)}<div><b class="num">${l.code}</b> ${esc(l.name)}${l.sn?' <span class="sn">SN</span>':""}<small>${paidOf(l)>1?`<b>${paidOf(l)} h prepaid</b> · `:""}${l.pick?`picked up ${clock(l.pick)}`:"paid, not picked up"}${l.swaps?.length?` · swapped from ${l.swaps.map(x=>x.from).join(", ")}`:""}</small></div></div>
           <div><span class="v num">${l.pick?hm(el):"—"}</span><small>${l.state==="riding"?"riding":l.pick?"ridden":""}</small></div>
           <div><b>${s.txt}</b><small>${s.sub}</small></div>${btns}</div>`;}).join("")}</div>`;}).join("")
     :`<div class="empty">${active.length?`No order matches. <button class="linkbtn" data-dclear>Clear filter</button>`:"No bikes waiting or out. Confirmed orders appear here."}</div>`;
@@ -1058,12 +1088,12 @@ function drawCond(){ const bx=$("condBox"); if(!bx) return;
     ${pending.cond==="maint"?`<div class="issues">${ISSUES.map(i=>`<button data-issue="${i}" aria-pressed="${pending.issue===i}">${i}</button>`).join("")}</div>`:""}`;
   const pb=document.querySelector(".dlg .primary"); if(pb) pb.disabled=pending.cond==="maint"&&!pending.issue; }
 function openReturn(c){
-  const l=lineByCode(c,true), o=orderOf(l), now=NOW(), el=now-l.pick, H=chg(el,graceOf(o)), extra=r3(priceFor(o,l,H)-l.adv);
-  pending={c,now,H,extra,cond:"ok",issue:null,mode:"return"};
+  const l=lineByCode(c,true), o=orderOf(l), now=NOW(), el=now-l.pick, P=paidOf(l), H=chg(el,graceOf(o),P), diff=r3(priceFor(o,l,H)-l.adv), extra=Math.max(0,diff), refund=Math.max(0,-diff);
+  pending={c,now,H,extra,refund,cond:"ok",issue:null,mode:"return"};
   $("dlgBody").innerHTML=`<h3>Receive ${l.code} · ${esc(l.name)}</h3><div class="meta">${o.id} · ${esc(o.who)}</div>
     <div class="kv"><span>Picked up</span><span class="num">${clock(l.pick)}</span></div><div class="kv"><span>Received</span><span class="num">${clock(now)}</span></div>
-    <div class="kv"><span>Actual time</span><span class="num">${hm(el)} → ${H} chargeable h</span></div><div id="condBox"></div>
-    <div class="bal ${extra>0?"due":"zero"}"><span>${extra>0?"Customer pays at the front":"Covered by the advance"}</span><span class="num">${extra>0?f(extra):"✓"}</span></div>
+    ${P>1?`<div class="kv"><span>Prepaid</span><span class="num">${P} h · ${f(l.adv)}</span></div>`:""}<div class="kv"><span>Actual time</span><span class="num">${hm(el)} → ${H} chargeable h</span></div><div id="condBox"></div>
+    <div class="bal ${extra>0?"due":refund>0?"ref":"zero"}"><span>${extra>0?"Customer pays at the front":refund>0?`Refund at the front · ${P-H} unused hour${P-H>1?"s":""}`:"Covered by the advance"}</span><span class="num">${extra>0?f(extra):refund>0?f(refund):"✓"}</span></div>
     <div class="acts"><button data-act="close">Cancel</button><button class="primary" data-act="doreturn">Confirm bike received</button></div>`;
   drawCond(); $("dlg").showModal();
 }
@@ -1071,10 +1101,10 @@ function setUnitAfter(code,cond,issue,at){ const u=unit(code); u.st=cond==="main
 function doReturn(){
   if(pending.cond==="maint"&&!pending.issue) return;
   const l=lineByCode(pending.c,true), o=orderOf(l);
-  Object.assign(l,{ret:pending.now,H:pending.H,extra:pending.extra,cond:pending.cond,issue:pending.issue,state:pending.extra>0.0005?"toSettle":"closed"});
+  Object.assign(l,{ret:pending.now,H:pending.H,extra:pending.extra,refund:pending.refund||0,cond:pending.cond,issue:pending.issue,state:pending.extra>0.0005?"toSettle":(pending.refund||0)>0.0005?"refundPending":"closed"});
   setUnitAfter(l.code,pending.cond,pending.issue,pending.now);
   persistOrder(o); persist("units"); $("dlg").close(); refreshAll();
-  toast(`${l.code} received${pending.cond==="maint"?" and sent to maintenance":""}. ${l.state==="toSettle"?`Customer to pay ${f(l.extra)} KWD at the front.`:"Nothing more to pay."}`);
+  toast(`${l.code} received${pending.cond==="maint"?" and sent to maintenance":""}. ${l.state==="toSettle"?`Customer to pay ${f(l.extra)} KWD at the front.`:l.state==="refundPending"?`Customer collects ${f(l.refund)} KWD cash at the front.`:"Nothing more to pay."}`);
 }
 function openSwap(c){
   const l=lineByCode(c,true), o=orderOf(l), nx=UNITS.find(u=>u.bikeId===l.bikeId&&u.st==="free");
@@ -1119,23 +1149,24 @@ function doCancel(){
 }
 
 /* ================= 3 · SETTLE PAYMENT (per order) ================= */
-const SETTLE=["toSettle","cancelPending"];
+const SETTLE=["toSettle","cancelPending","refundPending"];
+const REFS=["cancelPending","refundPending"], refAmtOf=l=>l.state==="cancelPending"?l.adv:(l.refund||0);
 function renderSettle(){
   const list=ORDERS.filter(o=>o.lines.some(l=>SETTLE.includes(l.state)));
   $("settleList").innerHTML=list.length?list.map(o=>{
-    const due=o.lines.filter(l=>l.state==="toSettle"), refunds=o.lines.filter(l=>l.state==="cancelPending");
+    const due=o.lines.filter(l=>l.state==="toSettle"), refunds=o.lines.filter(l=>REFS.includes(l.state));
     due.forEach(l=>{ if(l.pick_sel===undefined) l.pick_sel=true; });
-    const sel=due.filter(l=>l.pick_sel), selAmt=r3(sel.reduce((a,l)=>a+l.extra,0)), refAmt=r3(refunds.reduce((a,l)=>a+l.adv,0));
+    const sel=due.filter(l=>l.pick_sel), selAmt=r3(sel.reduce((a,l)=>a+l.extra,0)), refAmt=r3(refunds.reduce((a,l)=>a+refAmtOf(l),0));
     const still=o.lines.filter(l=>OPEN.includes(l.state)).length;
     return `<div class="group"><div class="ghead"><b>${esc(o.who)}</b><span>${o.id}</span>${o.phone?`<span class="num">${fmtPhone(o.phone)}</span>`:""}<span>${still?`${still} bike${still>1?"s":""} still out`:"all bikes back"}</span></div>
       ${due.map(l=>`<label class="brow srow"><input type="checkbox" data-ck="${l.code}" ${l.pick_sel?"checked":""} aria-label="Include ${l.code}">
         <div class="bn">${iconOfBike(l.bikeId)}<div><b class="num">${l.code}</b> ${esc(l.name)}${l.sn?' <span class="sn">SN</span>':""}<small>${clock(l.pick)} → ${clock(l.ret)} · ${hm(l.ret-l.pick)}</small></div></div>
         <div><span class="v num">${l.H} h</span><small>chargeable</small></div>
         <div><small>final ${f(l.adv+l.extra)} − advance ${f(l.adv)}</small><b class="num">Due ${f(l.extra)}</b></div></label>`).join("")}
-      ${refunds.map(l=>`<div class="brow srow"><span></span><div class="bn">${iconOfBike(l.bikeId)}<div><b class="num">${l.code}</b> ${esc(l.name)}<small>cancelled</small></div></div><div></div><div><b class="num" style="color:var(--info)">Refund ${f(l.adv)}</b></div></div>`).join("")}
+      ${refunds.map(l=>`<div class="brow srow"><span></span><div class="bn">${iconOfBike(l.bikeId)}<div><b class="num">${l.code}</b> ${esc(l.name)}<small>${l.state==="cancelPending"?"cancelled":`back early · ${l.H} h used of ${paidOf(l)} prepaid`}</small></div></div><div></div><div><b class="num" style="color:var(--info)">Refund ${f(refAmtOf(l))}</b></div></div>`).join("")}
       <div class="sfoot"><div class="invs">${o.invoices.map(i=>`<span class="inv ${i.amount<0?"cr":""}" data-docs="${o.id}|${i.no}" role="button" tabindex="0"><b class="num">${i.no}</b> ${esc(i.kind)} · <span class="num">${f(Math.abs(i.amount))}</span></span>`).join("")}</div>
         <div class="sbtns">${refunds.length?`<button class="rbtn" data-refund="${o.id}">Refund ${f(refAmt)} cash</button>`:""}${due.length?`<button class="sbtn" data-settle="${o.id}" ${sel.length?"":"disabled"}>Invoice & collect ${f(selAmt)}</button>`:""}</div></div></div>`;}).join("")
-    :`<div class="empty">Nothing to settle. Bikes returned after the first hour appear here for payment.</div>`;
+    :`<div class="empty">Nothing to settle. Bikes returned after their paid hours appear here for payment; early returns appear here for refund.</div>`;
   $("settleCount").textContent=ORDERS.reduce((a,o)=>a+o.lines.filter(l=>SETTLE.includes(l.state)).length,0);
 }
 let SP=null;
@@ -1167,16 +1198,16 @@ async function doSettle(){
   if(BUSY) return; BUSY=true; const pb=document.querySelector(".dlg .primary"); if(pb){pb.disabled=true;pb.textContent="Saving…";}
   const no=numFmt("inv",(await allocNos({inv:1})).inv); BUSY=false;
   const o=ORDERS.find(x=>x.id===SP.id);
-  const inv=newInvoice(no,o,"Extra hours",SP.codes,SP.due,SP.lines,l=>({code:l.code,name:l.name,desc:`${l.H} h used · 1st hour paid in advance`,amt:l.extra}));
+  const inv=newInvoice(no,o,"Extra hours",SP.codes,SP.due,SP.lines,l=>({code:l.code,name:l.name,desc:`${l.H} h used · ${paidOf(l)===1?"1st hour":paidOf(l)+" h"} paid in advance`,amt:l.extra}));
   SP.codes.forEach(c=>{const l=o.lines.find(x=>x.code===c); l.state="closed"; l.inv=inv.no; delete l.pick_sel;});
   o.lines.forEach(l=>{ if(l.state==="toSettle") l.pick_sel=true; });   // remaining bikes ready for the next settlement
   persistOrder(o); refreshAll(); openDocs(o.id,inv.no);
 }
 function openRefund(id){
-  const o=ORDERS.find(x=>x.id===id), ls=o.lines.filter(l=>l.state==="cancelPending"), amt=r3(ls.reduce((a,l)=>a+l.adv,0));
+  const o=ORDERS.find(x=>x.id===id), ls=o.lines.filter(l=>REFS.includes(l.state)), amt=r3(ls.reduce((a,l)=>a+refAmtOf(l),0));
   SP={id,codes:ls.map(l=>l.code),due:amt};
-  $("dlgBody").innerHTML=`<h3>Refund cancelled bikes · ${o.id}</h3><div class="meta">${esc(o.who)} · credit note against the advance</div>
-    ${ls.map(l=>`<div class="kv"><span><b class="num">${l.code}</b> ${esc(l.name)}</span><span class="num">${f(l.adv)}</span></div>`).join("")}
+  $("dlgBody").innerHTML=`<h3>Refund · ${o.id}</h3><div class="meta">${esc(o.who)} · credit note against the advance</div>
+    ${ls.map(l=>`<div class="kv"><span><b class="num">${l.code}</b> ${esc(l.name)} · ${l.state==="cancelPending"?"cancelled":`${l.H} h of ${paidOf(l)}`}</span><span class="num">${f(refAmtOf(l))}</span></div>`).join("")}
     <div class="bal ref"><span>Give back in cash</span><span class="num">${f(amt)}</span></div>
     <div class="acts"><button data-act="close">Cancel</button><button class="primary" data-act="dorefund">Post credit note & refund</button></div>`;
   $("dlg").showModal();
@@ -1185,8 +1216,10 @@ async function doRefund(){
   if(BUSY) return; BUSY=true; const pb=document.querySelector(".dlg .primary"); if(pb){pb.disabled=true;pb.textContent="Saving…";}
   const no=numFmt("rinv",(await allocNos({rinv:1})).rinv); BUSY=false;
   const o=ORDERS.find(x=>x.id===SP.id);
-  const inv=newInvoice(no,o,"Credit note · cancelled",SP.codes,-SP.due,[{m:"Cash",amt:-SP.due}],l=>({code:l.code,name:l.name,desc:"Cancelled · refund of advance",amt:-l.adv}));
-  SP.codes.forEach(c=>{const l=o.lines.find(x=>x.code===c); l.state="cancelled"; l.inv=inv.no;});
+  const ls=SP.codes.map(c=>o.lines.find(x=>x.code===c)), allCan=ls.every(l=>l.state==="cancelPending"), allEarly=ls.every(l=>l.state==="refundPending");
+  const inv=newInvoice(no,o,allCan?"Credit note · cancelled":allEarly?"Credit note · unused hours":"Credit note · refund",SP.codes,-SP.due,[{m:"Cash",amt:-SP.due}],
+    l=>({code:l.code,name:l.name,desc:l.state==="cancelPending"?"Cancelled · refund of advance":`Returned after ${l.H} h · ${paidOf(l)-l.H} unused prepaid hour${paidOf(l)-l.H>1?"s":""}`,amt:-refAmtOf(l)}));
+  ls.forEach(l=>{ l.state=l.state==="cancelPending"?"cancelled":"closed"; l.inv=inv.no; });
   persistOrder(o); refreshAll(); openDocs(o.id,inv.no); toast(`Give ${f(SP.due)} KWD cash back.`);
 }
 
@@ -1204,7 +1237,7 @@ function receiptHTML(o,inv){
     <div class="rc-rule"></div><div class="rc-kv tot"><span>${cr?"Refunded":"Total"} KWD</span><span>${f(Math.abs(inv.amount))}</span></div>
     ${inv.pays.map(p=>`<div class="rc-kv"><span>${cr?"Paid out":"Paid"} · ${esc(p.m)}</span><span>${f(Math.abs(p.amt))}</span></div>${p.change?`<div class="rc-kv"><span>Cash given</span><span>${f(p.amt+p.change)}</span></div><div class="rc-kv"><span>Change</span><span>${f(p.change)}</span></div>`:""}`).join("")}
     ${(!cr&&/Advance/.test(inv.kind)&&o.voucher)?`<div class="rc-rule"></div><div class="rc-v">FREE COFFEE VOUCHER<br><small>قهوة مجانية من المقهى</small><br><span style="font-size:16px;letter-spacing:2px">${o.voucher}</span><br>1 coffee · ${o.id}<br><small>Valid today at the café next door. One per customer, one use only.</small></div>`:""}
-    <div class="rc-rule"></div><div class="rc-f">${cr?"Refund given in cash.":`First hour includes ${graceOf(o)} min grace. After 1:${String(graceOf(o)).padStart(2,"0")}, every started hour is charged.`}<br>Served by ${esc((inv.by||"").split("@")[0]||C.cashier)} · شكراً لزيارتكم</div></div>`;
+    <div class="rc-rule"></div><div class="rc-f">${cr?"Refund given in cash.":`Paid hours include ${graceOf(o)} min return grace. After that, every started hour is charged.`}<br>Served by ${esc((inv.by||"").split("@")[0]||C.cashier)} · شكراً لزيارتكم</div></div>`;
 }
 function invoiceHTML(o,inv){
   const cr=inv.amount<0, paid=r3(inv.pays.reduce((a,p)=>a+p.amt,0)), C=SET.company;
@@ -1395,7 +1428,8 @@ async function importData(d,label){
   (d.drafts||[]).forEach(x=>ops.push({t:"set",col:"drafts",id:x.id,data:clean(x)}));
   Object.entries(d.days||{}).forEach(([k,v])=>ops.push({t:"set",col:"days",id:k,data:clean(v)}));
   orders.forEach(o=>ops.push({t:"set",col:"orders",id:o.id,data:stripOrder(o)}));
-  try{ for(let i=0;i<ops.length;i+=400) await withTimeout(CLOUD.write(ops.slice(i,i+400)),30000); }
+  const AC=adminCloud(); if(!AC) return toast("Only a manager can load data into the cloud.");
+  try{ for(let i=0;i<ops.length;i+=400) await withTimeout(AC.write(ops.slice(i,i+400)),30000); }
   catch(e){ return toast("Import stopped: "+e.message+". Check the internet connection and try again."); }
   META.imported=NOW(); saveMeta(); toast(`${label} loaded into the cloud: ${orders.length} orders, ${(d.customers||[]).length} customers.`); renderSettings();
 }
@@ -1437,7 +1471,7 @@ function renderSettings(){
     <label>NBK discount %<input data-o="nbkPct" type="number" value="${O.nbkPct}"></label>
     <label>Café coffee transfer price KWD<input data-o="coffeePrice" type="number" step="0.001" value="${O.coffeePrice}"></label>
     <label>Cancellation grace (minutes after pickup)<input data-o="graceMin" type="number" value="${O.graceMin}"></label>
-    <label>Return grace after the 1st hour (minutes)<input data-o="returnGrace" type="number" value="${O.returnGrace??30}"></label></div>
+    <label>Return grace after the paid hours (minutes)<input data-o="returnGrace" type="number" value="${O.returnGrace??30}"></label></div>
     <p class="lnote">Return grace: up to 1 hour + grace is charged as 1 hour. Past it, every started hour counts (e.g. 30 min grace: 1:30 = 1 h, 1:31 = 2 h, 2:10 = 3 h).</p>
     <p class="lnote">Changes apply to new orders only; confirmed orders keep the prices they were sold at.</p></div>
   <div class="spanel"><h3>Receipt and company</h3><div class="sgrid">
@@ -1448,6 +1482,8 @@ function renderSettings(){
     <label>Journal (code or name)<input data-a="journal" value="${esc(A.journal||"")}" placeholder="e.g. MISC"></label>
     <label>Rental revenue account code<input data-a="revenue" value="${esc(A.revenue||"")}"></label>
     ${SET.methods.map(m=>`<label>${esc(m)} account code<input data-a="${esc(m)}" value="${esc(A[m]||"")}"></label>`).join("")}</div></div>
+  <div class="spanel"><h3>Managers</h3><p>Only these logins can open Day report and Settings, or unlock them on a staff desk: <b>${ADMIN_EMAILS.join(", ")}</b>.</p>
+    <p class="lnote">To add or remove a manager, ask support: the list is also set in the Firebase security rules.</p></div>
   <div class="spanel"><h3>Backups</h3>
     <p>Backup folder: <b>${META.folderName?esc(META.folderName):"not set (files go to Downloads)"}</b> · last backup: <b>${META.lastBackup?dt(META.lastBackup):"never"}</b> · browser storage permanent: <b>${META.persisted?"yes":"not confirmed"}</b></p>
     <div class="sgrid"><label>Remind me to back up every (hours)<input data-s="backupHours" type="number" value="${SET.backupHours}"></label>
@@ -1481,6 +1517,7 @@ function collectChanges(){
 const applySet=(obj,sc)=>{ sc.forEach(([path,val])=>{ let o=obj; for(let i=0;i<path.length-1;i++) o=o[path[i]]=o[path[i]]||{}; o[path[path.length-1]]=val; }); return obj; };
 function applyBikes(list,bc){ Object.entries(bc).forEach(([id,ch])=>{ const b=list.find(x=>x.id===id); if(b) Object.assign(b,ch); }); return list; }
 async function saveAllSettings(){
+  const AC=adminCloud(); if(!AC){ toast("Only a manager can change Settings."); return false; }
   const {sc,bc,err}=collectChanges(); if(err){ toast(err); return false; }
   if(!sc.length&&!Object.keys(bc).length){ SETDIRTY=false; toast("No changes to save."); return []; }
   const notes=[], countsTouched=Object.values(bc).some(ch=>"count" in ch);
@@ -1490,7 +1527,7 @@ async function saveAllSettings(){
     Object.assign(b,ch); const live=syncUnits(b); if(live>b.count) notes.push(`${b.name}: ${live-b.count} bike(s) are out or reserved, so ${live} stay until they come back`); });
   applySet(SET,sc); if(countsTouched) SET.placeholderCounts=false;
   persist("units");
-  try{ const res=await withTimeout(CLOUD.txn(async t=>{ const sv=(await t.get("config","settings"))||clean(SET), bv=(await t.get("config","bikes"))||{list:clean(BIKES)};
+  try{ const res=await withTimeout(AC.txn(async t=>{ const sv=(await t.get("config","settings"))||clean(SET), bv=(await t.get("config","bikes"))||{list:clean(BIKES)};
       applySet(sv,sc); if(countsTouched) sv.placeholderCounts=false; sv.rev=(sv.rev||0)+1;
       BIKES.forEach(b=>{ if(!bv.list.some(x=>x.id===b.id)) bv.list.push(clean(b)); }); applyBikes(bv.list,bc);
       t.set("config","settings",clean(sv)); t.set("config","bikes",{list:clean(bv.list)}); return {sv,bv}; }),8000);
@@ -1506,7 +1543,8 @@ async function saveAllSettings(){
 function saveBikes(){ return saveAllSettings(); }
 async function addBike(){ if(await saveAllSettings()===false) return; const n=BIKES.length+1; let id="b"+n; while(bikeById(id)) id="b"+(++n);
   const nb={id,name:"New bike",ar:"",prefix:"NB"+n,rate:2,mon:false,wed:false,group:"",icon:"standard",popular:false,count:0,active:true}; BIKES.push(nb);
-  try{ await withTimeout(CLOUD.txn(async t=>{ const bv=(await t.get("config","bikes"))||{list:[]}; if(!bv.list.some(x=>x.id===id)) bv.list.push(nb); t.set("config","bikes",{list:clean(bv.list)}); }),8000); }
+  const AC=adminCloud(); if(!AC){ toast("Only a manager can change Settings."); return; }
+  try{ await withTimeout(AC.txn(async t=>{ const bv=(await t.get("config","bikes"))||{list:[]}; if(!bv.list.some(x=>x.id===id)) bv.list.push(nb); t.set("config","bikes",{list:clean(bv.list)}); }),8000); }
   catch(e){ persist("bikes"); }
   renderSettings(); toast("New bike type added. Fill in its row, then Save all."); }
 function saveSettings(){ return saveAllSettings(); }
@@ -1514,16 +1552,49 @@ function saveSettings(){ return saveAllSettings(); }
 let VIEW="new";
 let SETDIRTY=false;
 function showView(v){
+  if((v==="report"||v==="settings")&&!isAdmin()) return openUnlock(v);
   if(VIEW==="settings"&&v!=="settings"&&SETDIRTY){ if(confirm("You have unsaved changes in Settings. Save them now?")) saveSettings(); SETDIRTY=false; }
   VIEW=v; document.querySelectorAll("[data-view]").forEach(b=>b.setAttribute("aria-selected",b.dataset.view===v));
   $("newView").style.display=v==="new"?"":"none"; $("draftBar").style.display=v==="new"?"":"none";
   ["out","settle","orders","maint","report","settings"].forEach(k=>$(k+"View").classList.toggle("show",v===k));
   if(v==="orders") renderOrders(); if(v==="report"){ REPORT_DIRTY=false; renderReport(); } if(v==="settings") renderSettings();
+  if(ELEV&&v!=="report"&&v!=="settings") lockManager();       // leaving the manager screens locks them again
 }
+const UNLOCK_ERR={"auth/invalid-credential":"Wrong email or password.","auth/wrong-password":"Wrong email or password.","auth/user-not-found":"Wrong email or password.",
+  "auth/too-many-requests":"Too many attempts. Wait a minute and try again.","auth/network-request-failed":"No internet connection. Unlocking needs internet."};
+function openUnlock(v){
+  const name=v==="report"?"Day report":"Settings";
+  $("dlgBody").innerHTML=`<h3>🔒 ${name} · manager only</h3><div class="meta">A manager signs in to open it on this desk. It locks again when you leave it or after ${MGR_MIN} idle minutes.</div>
+    <form id="unlockForm"><label class="flabel" for="ulEmail">Manager email</label><input id="ulEmail" class="finput" type="email" autocomplete="off" required>
+    <label class="flabel" for="ulPass">Password</label><input id="ulPass" class="finput" type="password" autocomplete="off" required>
+    <div class="fmsg" id="ulMsg"></div>
+    <div class="acts"><button type="button" data-act="close">Cancel</button><button type="submit" class="primary" id="ulBtn">Unlock ${name}</button></div></form>`;
+  $("dlg").showModal(); setTimeout(()=>$("ulEmail").focus(),50);
+  $("unlockForm").onsubmit=async e=>{ e.preventDefault(); const em=$("ulEmail").value.trim(), pw=$("ulPass").value; $("ulMsg").textContent="";
+    if(!isAdminEmail(em)){ $("ulMsg").innerHTML='<span class="bad">This login is not a manager.</span>'; return; }
+    $("ulBtn").disabled=true; $("ulBtn").textContent="Checking…";
+    try{ const cl=await withTimeout(CLOUD.elevate(em,pw),15000);
+      ELEV={email:cl.email||em,cloud:cl,until:NOW()+MGR_MIN*60e3,unwatch:watchDays(cl)};
+      $("dlg").close(); toast(`Unlocked by ${ELEV.email.split("@")[0]}. Locks when you leave ${name} or after ${MGR_MIN} idle minutes.`);
+      refreshAll(); showView(v); }
+    catch(err){ $("ulMsg").innerHTML=`<span class="bad">${esc(UNLOCK_ERR[err.code]||err.message)}</span>`; $("ulBtn").disabled=false; $("ulBtn").textContent=`Unlock ${name}`; } };
+}
+function lockManager(reason){
+  if(!ELEV) return; const e=ELEV; ELEV=null;
+  try{ e.unwatch&&e.unwatch(); }catch(x){}
+  if(!signedInAdmin()){ DAYS_LOG={}; BASE.days={}; }
+  setTimeout(()=>e.cloud.close(),10000);                        // let a save that is still on its way finish first
+  if(VIEW==="report"||VIEW==="settings"){ VIEW="new"; showView("new"); }
+  refreshAll(); if(reason) toast(reason);
+}
+setInterval(()=>{ if(ELEV&&NOW()>ELEV.until) lockManager(`Manager screens locked after ${MGR_MIN} idle minutes.`); },10e3);
+["click","input","keydown"].forEach(ev=>document.addEventListener(ev,()=>{ if(ELEV&&(VIEW==="report"||VIEW==="settings")) ELEV.until=NOW()+MGR_MIN*60e3; },true));
 function render(){ renderNew(); }
 let REPORT_DIRTY=false;
 function refreshAll(){ renderNew(); renderBoard(); renderSettle(); renderMaint(); if(VIEW==="orders") renderOrders(); if(VIEW==="report"&&!REPORT_DIRTY) renderReport(); if(VIEW==="settings"&&!SETDIRTY) renderSettings();
   $("ordCount").textContent=DRAFTS.length?DRAFTS.length:""; $("brandName").textContent=SET.company.name;
+  document.querySelectorAll('[data-view="report"],[data-view="settings"]').forEach(t=>t.classList.toggle("locked",!isAdmin()));
+  $("mgrLbl").innerHTML=ELEV?`<button class="bkbtn mgr" data-lockmgr title="Lock manager screens now">🔓 ${esc(ELEV.email.split("@")[0])} · Lock</button>`:"";
   $("todayLbl").textContent=`${DAYS[todayDow()]}${SET.testDay!==""?" (test)":""}`; }
 
 document.addEventListener("click",e=>{
@@ -1542,6 +1613,7 @@ document.addEventListener("click",e=>{
   if(c("#tDay")){ S.dayOffer=!S.dayOffer; S.dayOff=[]; return render(); }
   if(x=c("[data-daycode]")){ const k=x.dataset.daycode; S.dayOff=(S.dayOff||[]).includes(k)?S.dayOff.filter(v=>v!==k):[...(S.dayOff||[]),k]; return render(); }
   if(c("#tSN")){ S.sn=!S.sn; S.snCodes=S.sn&&S.sel.length?[S.sel[0]]:[]; if(S.sn&&S.sel.length>1) toast("Special needs is on for "+S.sel[0]+". Tap SN on another bike to move it."); return render(); }
+  if(x=c("[data-hrs]")){ if(S.pay.lines.length||Object.keys(S.pay.rider||{}).length) return toast("Payment already taken. Remove it first (×), then change the hours."); S.hours=Math.max(1,Math.min(12,+x.dataset.hrs)); return render(); }
   if(x=c("[data-sncode]")){ const k=x.dataset.sncode; S.snCodes=S.snCodes.includes(k)?S.snCodes.filter(v=>v!==k):[...S.snCodes,k]; return render(); }
   if(c("#tNBK")){ S.nbk=!S.nbk; return render(); }
   if(x=c("[data-pm]")){ S.pay.method=x.dataset.pm; return addPayment(); }
@@ -1593,7 +1665,8 @@ document.addEventListener("click",e=>{
   if(c("[data-folder]")) return chooseFolder();
   if(c("[data-restore]")) return $("restoreFile").click();
   if(c("[data-migrate]")) return migrateLocal();
-  if(c("[data-signout]")){ if(confirm("Sign out of this desk?")) CLOUD.signOut().then(()=>location.reload()); return; }
+  if(c("[data-lockmgr]")){ lockManager("Manager screens locked."); return; }
+  if(c("[data-signout]")){ if(confirm("Sign out of this desk?")){ lockManager(); CLOUD.signOut().then(()=>location.reload()); } return; }
   if(c("[data-addbike]")) return addBike();
     if(c("[data-savesettings]")) return saveSettings();
   if(x=c("[data-act]")){ const a=x.dataset.act; ({close:()=>$("dlg").close(),doreturn:doReturn,doswap:doSwap,docancel:doCancel,dosettle:doSettle,dorefund:doRefund}[a]||(()=>{}))(); }
