@@ -981,7 +981,7 @@ async function confirmOrder(){
       const cnt=(await t.get("config","counters"))||{}; const us=[]; for(const code of sel) us.push(await t.get("units",code));
       const bad=sel.filter((code,i)=>!us[i]||!(us[i].st==="free"||(us[i].st==="draft"&&us[i].draft===draftId)));
       if(bad.length) throw Object.assign(new Error("taken"),{taken:bad});
-      const out={order:(cnt.order||0)+1}; cnt.order=out.order; if(adv>0.0005){ out.inv=(cnt.inv||0)+1; cnt.inv=out.inv; }
+      const out={order:(cnt.order||0)+1}; cnt.order=out.order; out.inv=(cnt.inv||0)+1; cnt.inv=out.inv;
       t.set("config","counters",cnt); sel.forEach((code,i)=>t.set("units",code,{...us[i],st:"held",draft:null})); return out; }),8000);
   }catch(e){
     if(e.taken){ S.sel=S.sel.filter(x=>!e.taken.includes(x)); toast(`${e.taken.join(", ")} was just taken at another desk. Removed from this ticket — add another bike.`); return; }
@@ -991,7 +991,9 @@ async function confirmOrder(){
   sel.forEach(code=>{ const u=unit(code); if(u){ u.st="held"; u.draft=null; } });
   persist("units");
   const pays=S.pay.mode==="riders"?o.lines.filter(l=>l.adv>0.0005).map(l=>({m:S.pay.rider[l.code],amt:l.adv})):S.pay.lines.map(p=>({...p}));
-  if(adv>0.0005) newInvoice(numFmt("inv",nos.inv),o,PH===1?"Advance · 1st hour":`Advance · ${PH} hours`,o.lines.map(l=>l.code),adv,pays,l=>({code:l.code,name:l.name,desc:PH===1?(l.sn?"1st hour · Special needs (free)":l.ly?"1st hour · Loyalty (free)":"1st hour (advance)"):`${PH} hours paid in advance${l.sn?" · 1st hour free (special needs)":l.ly?" · 1st hour free (loyalty)":""}`,amt:l.adv}));
+  { const free=adv<0.0005, full=l=>r3(l.rate*PH), why=l=>l.sn?"Special needs":l.ly?"Loyalty":"Offer";
+    newInvoice(numFmt("inv",nos.inv),o,free?"No charge · free ride":PH===1?"Advance · 1st hour":`Advance · ${PH} hours`,o.lines.map(l=>l.code),adv,free?[]:pays,
+      l=>({code:l.code,name:l.name,desc:(PH===1?(l.sn?"1st hour · Special needs (free)":l.ly?"1st hour · Loyalty (free)":"1st hour (advance)"):`${PH} hours paid in advance${l.sn?" · 1st hour free (special needs)":l.ly?" · 1st hour free (loyalty)":""}`)+(l.adv<0.0005?` · value ${f(full(l))}, ${why(l)} −${f(full(l))}`:""),amt:l.adv})); }
   if(o.lines.some(l=>lineKey(o,l)==="wed")){ const A="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; let v=""; for(let i=0;i<6;i++) v+=A[Math.floor(Math.random()*A.length)]; o.voucher="CAFE-"+v; }
   ORDERS.unshift(o); BASE.orders[o.id]=undefined; CLOUD.write([{t:"set",col:"orders",id:o.id,data:clean(o)}]).catch(e=>toast("Cloud save failed: "+e.message));
   if(draftId){ DRAFTS=DRAFTS.filter(d=>d.id!==draftId); persist("drafts"); }
@@ -1250,7 +1252,7 @@ function receiptHTML(o,inv){
     <div class="rc-kv"><span>Customer</span><span>${esc(o.who)}</span></div>${o.lyRef?`<div class="rc-kv"><span>Loyalty ref</span><span>${esc(o.lyRef)}</span></div>`:""}${o.phone?`<div class="rc-kv"><span>Mobile</span><span>${fmtPhone(o.phone)}</span></div>`:""}
     <div class="rc-rule"></div>${inv.items.map(i=>`<div class="rc-item"><span>${i.code} ${esc(i.name)}<small>${esc(i.desc)}</small></span><span>${f(i.amt)}</span></div>`).join("")}
     <div class="rc-rule"></div><div class="rc-kv tot"><span>${cr?"Refunded":"Total"} KWD</span><span>${f(Math.abs(inv.amount))}</span></div>
-    ${inv.pays.map(p=>`<div class="rc-kv"><span>${cr?"Paid out":"Paid"} · ${esc(p.m)}</span><span>${f(Math.abs(p.amt))}</span></div>${p.change?`<div class="rc-kv"><span>Cash given</span><span>${f(p.amt+p.change)}</span></div><div class="rc-kv"><span>Change</span><span>${f(p.change)}</span></div>`:""}`).join("")}
+    ${inv.pays.length?"":`<div class="rc-kv"><span>Paid</span><span>No charge</span></div>`}${inv.pays.map(p=>`<div class="rc-kv"><span>${cr?"Paid out":"Paid"} · ${esc(p.m)}</span><span>${f(Math.abs(p.amt))}</span></div>${p.change?`<div class="rc-kv"><span>Cash given</span><span>${f(p.amt+p.change)}</span></div><div class="rc-kv"><span>Change</span><span>${f(p.change)}</span></div>`:""}`).join("")}
     ${(!cr&&/Advance/.test(inv.kind)&&o.voucher)?`<div class="rc-rule"></div><div class="rc-v">FREE COFFEE VOUCHER<br><small>قهوة مجانية من المقهى</small><br><span style="font-size:16px;letter-spacing:2px">${o.voucher}</span><br>1 coffee · ${o.id}<br><small>Valid today at the café next door. One per customer, one use only.</small></div>`:""}
     <div class="rc-rule"></div><div class="rc-f">${cr?"Refund given in cash.":`Paid hours include ${graceOf(o)} min return grace. After that, every started hour is charged.`}<br>Served by ${esc((inv.by||"").split("@")[0]||C.cashier)} · شكراً لزيارتكم</div></div>`;
 }
@@ -1268,7 +1270,7 @@ function findInv(id,no){const o=ORDERS.find(x=>x.id===id);return {o,inv:o&&o.inv
 function openDocs(id,no){
   const o=ORDERS.find(x=>x.id===id), inv=no?o.invoices.find(i=>i.no===no):o.invoices[o.invoices.length-1];
   $("dlg").classList.add("wide");
-  $("dlgBody").innerHTML=`<h3>${inv?`${inv.amount<0?"Refund":"Payment"} recorded · ${inv.no}`:"Documents"}</h3><div class="meta">${o.id} · ${esc(o.who)}${o.phone?" · "+fmtPhone(o.phone):""}</div>
+  $("dlgBody").innerHTML=`<h3>${inv?`${inv.amount<0?"Refund":Math.abs(inv.amount)<0.0005?"Free ride":"Payment"} recorded · ${inv.no}`:"Documents"}</h3><div class="meta">${o.id} · ${esc(o.who)}${o.phone?" · "+fmtPhone(o.phone):""}</div>
     ${inv?`<div class="docwrap"><div class="docprev">${receiptHTML(o,inv)}</div><div class="docact">
       <button class="dbtn" data-print="r|${o.id}|${inv.no}">🖨 Print cash receipt<small>80 mm receipt printer</small></button>
       <button class="dbtn" data-print="i|${o.id}|${inv.no}">🖨 Print ${inv.amount<0?"credit note":"invoice"}<small>A4</small></button>
@@ -1391,6 +1393,7 @@ function exportJE(D){
   Object.entries(x.rev).forEach(([n,v])=>L.push([A.revenue||"",`Rental ${n}`,0,v]));
   Object.entries(x.ref).forEach(([n,v])=>L.push([A.revenue||"",`Refund ${n}`,v,0]));
   if(x.cashRef) L.push([A["Cash"]||"","Cash refunds",0,x.cashRef]);
+  L.splice(0,L.length,...L.filter(l=>Math.abs(l[2])>0.0005||Math.abs(l[3])>0.0005));
   L.forEach((l,i)=>rows.push(i===0?[A.journal||"",D,`Ghost Bike pilot ${D}`,l[0],l[1],f(l[2]),f(l[3])]:["","","",l[0],l[1],f(l[2]),f(l[3])]));
   return {name:`ghostbike-journal-${D}.csv`,data:csv(rows)};
 }
