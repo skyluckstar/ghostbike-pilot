@@ -431,7 +431,7 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
       <div class="sub"><span>Before offer</span><span class="num" id="gross">0.000</span></div>
       <div class="sub"><span>Offer savings</span><span class="num" id="save">0.000</span></div>
       <div class="tot"><span>Pay now (KWD)</span><span class="big num" id="total">0.000</span></div>
-      <div class="lnote">Pay now covers the hours chosen above, per bike, plus a 30-minute return grace. The clock starts at pickup. Extra hours are paid at the front after return; unused paid hours are refunded in cash.</div>
+      <div class="lnote">Pay now covers the hours chosen above, per bike, plus a 30-minute return grace. Back within 10 min: full refund; within 40 min: half an hour is charged and the rest refunded. The clock starts at pickup. Extra hours are paid at the front after return; unused paid hours are refunded in cash.</div>
     </div>
     <div class="payzone">
       <h2>Payment <span class="ar">الدفع</span></h2>
@@ -499,6 +499,12 @@ const hm=ms=>{const m=Math.max(0,Math.floor(ms/MIN));return `${Math.floor(m/60)}
 // Past the grace, every started hour counts: 1:31 = 2 h, 2:10 = 3 h.
 const chg=(ms,grace=30,paidH=1)=>{ const m=Math.max(0,Math.floor(ms/MIN)); let H=m<=60+grace?1:Math.ceil(m/60); if(paidH>1&&m<=paidH*60+grace) H=Math.min(H,paidH); return H; };
 const paidOf=l=>Math.max(1,+(l&&l.paidH)||1);
+// Short first ride: back within the free window (10 min) = nothing charged; within the half-hour band (40 min) = half an hour.
+// Orders confirmed before this rule existed (no halfUpTo saved) keep the old calculation.
+function chargeH(o,l,ms){ const p=(o&&o.p)||{}, m=Math.max(0,Math.floor(ms/MIN));
+  if(p.halfUpTo!=null){ if(m<=+p.graceMin) return 0; if(m<=+p.halfUpTo) return 0.5; }
+  return chg(ms,graceOf(o),paidOf(l)); }
+const fmtH=h=>{ const w=Math.floor(h), hf=h%1>0.001; return (w||!hf?w:"")+(hf?"½":"")+" h"; };
 const graceOf=o=>(o&&o.p&&o.p.returnGrace!=null)?+o.p.returnGrace:+(SET&&SET.offers.returnGrace!=null?SET.offers.returnGrace:30);
 const clock=t=>new Date(t).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
 const dt=t=>new Date(t).toLocaleString([],{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
@@ -523,7 +529,7 @@ const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturda
 /* ---------- defaults (from the live Odoo product list and pricelists, 30 Sep 2026) ---------- */
 const DEFAULT_SETTINGS={
   company:{name:"Ghost Bike",ar:"جوست بايك",line:"Bicycle rental · Kuwait",cashier:"Counter 1"},
-  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:30,returnGrace:30},
+  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:40,returnGrace:30},
   methods:["KNET","Cash","Card","Pay link"],
   accounts:{journal:"",revenue:"","KNET":"","Cash":"","Card":"","Pay link":""},
   countryCode:"965", testDay:"", backupHours:12
@@ -1060,14 +1066,16 @@ function lineStatus(l){
   const g=graceOf(orderOf(l)), P=paidOf(l), el=l.pick?NOW()-l.pick:0, left=l.pick?l.pick+P*60*MIN-NOW():0, gl=l.pick?l.pick+(P*60+g)*MIN-NOW():0;
   switch(l.state){
     case "waiting": return {cls:"wait",txt:"Waiting for pickup",sub:"clock not started"};
-    case "riding": return left>0?{cls:"",txt:`${hm(left)} left in ${P===1?"1st hour":P+" paid hours"}`,sub:`+${g} min grace after`}
+    case "riding": { const op=(orderOf(l)||{}).p||{}, mm=Math.floor(el/MIN);
+      if(op.halfUpTo!=null&&mm<=+op.halfUpTo) return mm<=+op.graceMin?{cls:"",txt:`Free return · ${+op.graceMin-mm}m left`,sub:`then ½ h until ${op.halfUpTo} min`}:{cls:"",txt:`½ h if back within ${+op.halfUpTo-mm}m`,sub:`then full ${P===1?"1st hour":P+" paid hours"}`}; }
+      return left>0?{cls:"",txt:`${hm(left)} left in ${P===1?"1st hour":P+" paid hours"}`,sub:`+${g} min grace after`}
       : gl>0?{cls:"soon",txt:`In grace · ${hm(gl)} left`,sub:`still ${P} hour${P>1?"s":""}`}
-      : {cls:"over",txt:`Past grace by ${hm(-gl)}`,sub:`now ${chg(el,g,P)} chargeable h`};
+      : {cls:"over",txt:`Past grace by ${hm(-gl)}`,sub:`now ${fmtH(chargeH(orderOf(l),l,el))} chargeable`};
     case "toSettle": return {cls:"done",txt:"Received",sub:`customer to pay ${f(l.extra)} at front`};
     case "cancelPending": return {cls:"done",txt:"Cancelled",sub:`refund ${f(l.adv)} at front`};
     case "refundPending": return {cls:"done",txt:"Received early",sub:`refund ${f(l.refund)} at front`};
     case "cancelled": return {cls:"done",txt:"Cancelled",sub:"refunded"};
-    default: return {cls:"done",txt:"Closed",sub:l.H?`${l.H} h`:""};
+    default: return {cls:"done",txt:"Closed",sub:l.H!=null?fmtH(l.H):""};
   }
 }
 function renderBoard(){
@@ -1105,12 +1113,12 @@ function drawCond(){ const bx=$("condBox"); if(!bx) return;
     ${pending.cond==="maint"?`<div class="issues">${ISSUES.map(i=>`<button data-issue="${i}" aria-pressed="${pending.issue===i}">${i}</button>`).join("")}</div>`:""}`;
   const pb=document.querySelector(".dlg .primary"); if(pb) pb.disabled=pending.cond==="maint"&&!pending.issue; }
 function openReturn(c){
-  const l=lineByCode(c,true), o=orderOf(l), now=NOW(), el=now-l.pick, P=paidOf(l), H=chg(el,graceOf(o),P), diff=r3(priceFor(o,l,H)-l.adv), extra=Math.max(0,diff), refund=Math.max(0,-diff);
+  const l=lineByCode(c,true), o=orderOf(l), now=NOW(), el=now-l.pick, P=paidOf(l), H=chargeH(o,l,el), diff=r3(priceFor(o,l,H)-l.adv), extra=Math.max(0,diff), refund=Math.max(0,-diff);
   pending={c,now,H,extra,refund,cond:"ok",issue:null,mode:"return"};
   $("dlgBody").innerHTML=`<h3>Receive ${l.code} · ${esc(l.name)}</h3><div class="meta">${o.id} · ${esc(o.who)}</div>
     <div class="kv"><span>Picked up</span><span class="num">${clock(l.pick)}</span></div><div class="kv"><span>Received</span><span class="num">${clock(now)}</span></div>
-    ${P>1?`<div class="kv"><span>Prepaid</span><span class="num">${P} h · ${f(l.adv)}</span></div>`:""}<div class="kv"><span>Actual time</span><span class="num">${hm(el)} → ${H} chargeable h</span></div><div id="condBox"></div>
-    <div class="bal ${extra>0?"due":refund>0?"ref":"zero"}"><span>${extra>0?"Customer pays at the front":refund>0?`Refund at the front · ${P-H} unused hour${P-H>1?"s":""}`:"Covered by the advance"}</span><span class="num">${extra>0?f(extra):refund>0?f(refund):"✓"}</span></div>
+    ${P>1?`<div class="kv"><span>Prepaid</span><span class="num">${P} h · ${f(l.adv)}</span></div>`:""}<div class="kv"><span>Actual time</span><span class="num">${hm(el)} → ${fmtH(H)} chargeable</span></div><div id="condBox"></div>
+    <div class="bal ${extra>0?"due":refund>0?"ref":"zero"}"><span>${extra>0?"Customer pays at the front":refund>0?`Refund at the front · ${H===0?"returned within "+o.p.graceMin+" min":fmtH(P-H)+" not used"}`:"Covered by the advance"}</span><span class="num">${extra>0?f(extra):refund>0?f(refund):"✓"}</span></div>
     <div class="acts"><button data-act="close">Cancel</button><button class="primary" data-act="doreturn">Confirm bike received</button></div>`;
   drawCond(); $("dlg").showModal();
 }
@@ -1178,9 +1186,9 @@ function renderSettle(){
     return `<div class="group"><div class="ghead"><b>${esc(o.who)}</b><span>${o.id}</span>${o.phone?`<span class="num">${fmtPhone(o.phone)}</span>`:""}<span>${still?`${still} bike${still>1?"s":""} still out`:"all bikes back"}</span></div>
       ${due.map(l=>`<label class="brow srow"><input type="checkbox" data-ck="${l.code}" ${l.pick_sel?"checked":""} aria-label="Include ${l.code}">
         <div class="bn">${iconOfBike(l.bikeId)}<div><b class="num">${l.code}</b> ${esc(l.name)}${l.sn?' <span class="sn">SN</span>':""}${l.ly?' <span class="sn">★ Loyal</span>':""}<small>${clock(l.pick)} → ${clock(l.ret)} · ${hm(l.ret-l.pick)}</small></div></div>
-        <div><span class="v num">${l.H} h</span><small>chargeable</small></div>
+        <div><span class="v num">${fmtH(l.H)}</span><small>chargeable</small></div>
         <div><small>final ${f(l.adv+l.extra)} − advance ${f(l.adv)}</small><b class="num">Due ${f(l.extra)}</b></div></label>`).join("")}
-      ${refunds.map(l=>`<div class="brow srow"><span></span><div class="bn">${iconOfBike(l.bikeId)}<div><b class="num">${l.code}</b> ${esc(l.name)}<small>${l.state==="cancelPending"?"cancelled":`back early · ${l.H} h used of ${paidOf(l)} prepaid`}</small></div></div><div></div><div><b class="num" style="color:var(--info)">Refund ${f(refAmtOf(l))}</b></div></div>`).join("")}
+      ${refunds.map(l=>`<div class="brow srow"><span></span><div class="bn">${iconOfBike(l.bikeId)}<div><b class="num">${l.code}</b> ${esc(l.name)}<small>${l.state==="cancelPending"?"cancelled":`back early · ${fmtH(l.H)} used of ${fmtH(paidOf(l))} paid`}</small></div></div><div></div><div><b class="num" style="color:var(--info)">Refund ${f(refAmtOf(l))}</b></div></div>`).join("")}
       <div class="sfoot"><div class="invs">${o.invoices.map(i=>`<span class="inv ${i.amount<0?"cr":""}" data-docs="${o.id}|${i.no}" role="button" tabindex="0"><b class="num">${i.no}</b> ${esc(i.kind)} · <span class="num">${f(Math.abs(i.amount))}</span></span>`).join("")}</div>
         <div class="sbtns">${refunds.length?`<button class="rbtn" data-refund="${o.id}">Refund ${f(refAmt)} cash</button>`:""}${due.length?`<button class="sbtn" data-settle="${o.id}" ${sel.length?"":"disabled"}>Invoice & collect ${f(selAmt)}</button>`:""}</div></div></div>`;}).join("")
     :`<div class="empty">Nothing to settle. Bikes returned after their paid hours appear here for payment; early returns appear here for refund.</div>`;
@@ -1191,7 +1199,7 @@ function openSettle(id){
   const o=ORDERS.find(x=>x.id===id), ls=o.lines.filter(l=>l.state==="toSettle"&&l.pick_sel);
   SP={id,codes:ls.map(l=>l.code),due:r3(ls.reduce((a,l)=>a+l.extra,0)),method:SET.methods[0],lines:[]};
   $("dlgBody").innerHTML=`<h3>Settle ${ls.length} bike${ls.length>1?"s":""} · ${o.id}</h3><div class="meta">${esc(o.who)} · new invoice for the extra hours</div>
-    ${ls.map(l=>`<div class="kv"><span><b class="num">${l.code}</b> ${esc(l.name)} · ${l.H} h</span><span class="num">${f(l.extra)}</span></div>`).join("")}
+    ${ls.map(l=>`<div class="kv"><span><b class="num">${l.code}</b> ${esc(l.name)} · ${fmtH(l.H)}</span><span class="num">${f(l.extra)}</span></div>`).join("")}
     <div id="settlePay"></div><div class="acts"><button data-act="close">Cancel</button><button class="primary" data-act="dosettle">Post invoice</button></div>`;
   drawSettle(); $("dlg").showModal();
 }
@@ -1215,7 +1223,7 @@ async function doSettle(){
   if(BUSY) return; BUSY=true; const pb=document.querySelector(".dlg .primary"); if(pb){pb.disabled=true;pb.textContent="Saving…";}
   const no=numFmt("inv",(await allocNos({inv:1})).inv); BUSY=false;
   const o=ORDERS.find(x=>x.id===SP.id);
-  const inv=newInvoice(no,o,"Extra hours",SP.codes,SP.due,SP.lines,l=>({code:l.code,name:l.name,desc:`${l.H} h used · ${paidOf(l)===1?"1st hour":paidOf(l)+" h"} paid in advance`,amt:l.extra}));
+  const inv=newInvoice(no,o,"Extra hours",SP.codes,SP.due,SP.lines,l=>({code:l.code,name:l.name,desc:`${fmtH(l.H)} used · ${paidOf(l)===1?"1st hour":paidOf(l)+" h"} paid in advance`,amt:l.extra}));
   SP.codes.forEach(c=>{const l=o.lines.find(x=>x.code===c); l.state="closed"; l.inv=inv.no; delete l.pick_sel;});
   o.lines.forEach(l=>{ if(l.state==="toSettle") l.pick_sel=true; });   // remaining bikes ready for the next settlement
   persistOrder(o); refreshAll(); openDocs(o.id,inv.no);
@@ -1224,7 +1232,7 @@ function openRefund(id){
   const o=ORDERS.find(x=>x.id===id), ls=o.lines.filter(l=>REFS.includes(l.state)), amt=r3(ls.reduce((a,l)=>a+refAmtOf(l),0));
   SP={id,codes:ls.map(l=>l.code),due:amt};
   $("dlgBody").innerHTML=`<h3>Refund · ${o.id}</h3><div class="meta">${esc(o.who)} · credit note against the advance</div>
-    ${ls.map(l=>`<div class="kv"><span><b class="num">${l.code}</b> ${esc(l.name)} · ${l.state==="cancelPending"?"cancelled":`${l.H} h of ${paidOf(l)}`}</span><span class="num">${f(refAmtOf(l))}</span></div>`).join("")}
+    ${ls.map(l=>`<div class="kv"><span><b class="num">${l.code}</b> ${esc(l.name)} · ${l.state==="cancelPending"?"cancelled":`${fmtH(l.H)} of ${fmtH(paidOf(l))}`}</span><span class="num">${f(refAmtOf(l))}</span></div>`).join("")}
     <div class="bal ref"><span>Give back in cash</span><span class="num">${f(amt)}</span></div>
     <div class="acts"><button data-act="close">Cancel</button><button class="primary" data-act="dorefund">Post credit note & refund</button></div>`;
   $("dlg").showModal();
@@ -1235,7 +1243,7 @@ async function doRefund(){
   const o=ORDERS.find(x=>x.id===SP.id);
   const ls=SP.codes.map(c=>o.lines.find(x=>x.code===c)), allCan=ls.every(l=>l.state==="cancelPending"), allEarly=ls.every(l=>l.state==="refundPending");
   const inv=newInvoice(no,o,allCan?"Credit note · cancelled":allEarly?"Credit note · unused hours":"Credit note · refund",SP.codes,-SP.due,[{m:"Cash",amt:-SP.due}],
-    l=>({code:l.code,name:l.name,desc:l.state==="cancelPending"?"Cancelled · refund of advance":`Returned after ${l.H} h · ${paidOf(l)-l.H} unused prepaid hour${paidOf(l)-l.H>1?"s":""}`,amt:-refAmtOf(l)}));
+    l=>({code:l.code,name:l.name,desc:l.state==="cancelPending"?"Cancelled · refund of advance":(l.H===0?"Returned within the free window · full refund":`Used ${fmtH(l.H)} of ${fmtH(paidOf(l))} paid · ${fmtH(paidOf(l)-l.H)} refunded`),amt:-refAmtOf(l)}));
   ls.forEach(l=>{ l.state=l.state==="cancelPending"?"cancelled":"closed"; l.inv=inv.no; });
   persistOrder(o); refreshAll(); openDocs(o.id,inv.no); toast(`Give ${f(SP.due)} KWD cash back.`);
 }
@@ -1254,7 +1262,7 @@ function receiptHTML(o,inv){
     <div class="rc-rule"></div><div class="rc-kv tot"><span>${cr?"Refunded":"Total"} KWD</span><span>${f(Math.abs(inv.amount))}</span></div>
     ${inv.pays.length?"":`<div class="rc-kv"><span>Paid</span><span>No charge</span></div>`}${inv.pays.map(p=>`<div class="rc-kv"><span>${cr?"Paid out":"Paid"} · ${esc(p.m)}</span><span>${f(Math.abs(p.amt))}</span></div>${p.change?`<div class="rc-kv"><span>Cash given</span><span>${f(p.amt+p.change)}</span></div><div class="rc-kv"><span>Change</span><span>${f(p.change)}</span></div>`:""}`).join("")}
     ${(!cr&&/Advance/.test(inv.kind)&&o.voucher)?`<div class="rc-rule"></div><div class="rc-v">FREE COFFEE VOUCHER<br><small>قهوة مجانية من المقهى</small><br><span style="font-size:16px;letter-spacing:2px">${o.voucher}</span><br>1 coffee · ${o.id}<br><small>Valid today at the café next door. One per customer, one use only.</small></div>`:""}
-    <div class="rc-rule"></div><div class="rc-f">${cr?"Refund given in cash.":`Paid hours include ${graceOf(o)} min return grace. After that, every started hour is charged.`}<br>Served by ${esc((inv.by||"").split("@")[0]||C.cashier)} · شكراً لزيارتكم</div></div>`;
+    <div class="rc-rule"></div><div class="rc-f">${cr?"Refund given in cash.":`${o.p.halfUpTo!=null?`Back within ${o.p.graceMin} min: full refund. Within ${o.p.halfUpTo} min: half hour charged. `:""}Paid hours include ${graceOf(o)} min return grace. After that, every started hour is charged.`}<br>Served by ${esc((inv.by||"").split("@")[0]||C.cashier)} · شكراً لزيارتكم</div></div>`;
 }
 function invoiceHTML(o,inv){
   const cr=inv.amount<0, paid=r3(inv.pays.reduce((a,p)=>a+p.amt,0)), C=SET.company;
@@ -1521,7 +1529,8 @@ function renderSettings(){
     <label>Wednesday ladies price KWD/h<input data-o="wedPrice" type="number" step="0.001" value="${O.wedPrice}"></label>
     <label>NBK discount %<input data-o="nbkPct" type="number" value="${O.nbkPct}"></label>
     <label>Café coffee transfer price KWD<input data-o="coffeePrice" type="number" step="0.001" value="${O.coffeePrice}"></label>
-    <label>Cancellation grace (minutes after pickup)<input data-o="graceMin" type="number" value="${O.graceMin}"></label>
+    <label>Free return / cancel window (minutes after pickup)<input data-o="graceMin" type="number" value="${O.graceMin}"></label>
+    <label>Half-hour charge if back within (minutes after pickup)<input data-o="halfUpTo" type="number" value="${O.halfUpTo??40}"></label>
     <label>Return grace after the paid hours (minutes)<input data-o="returnGrace" type="number" value="${O.returnGrace??30}"></label></div>
     <p class="lnote">Return grace: up to 1 hour + grace is charged as 1 hour. Past it, every started hour counts (e.g. 30 min grace: 1:30 = 1 h, 1:31 = 2 h, 2:10 = 3 h).</p>
     <p class="lnote">Changes apply to new orders only; confirmed orders keep the prices they were sold at.</p></div>
