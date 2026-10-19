@@ -572,7 +572,8 @@ function fsOps(F,db){ const ref=(c,i)=>F.doc(db,c,i);
 }
 function firebaseCloud(cfg){
   const F=window.FBSDK, app=F.initializeApp(cfg), auth=F.getAuth(app);
-  const db=F.initializeFirestore(app,{localCache:F.persistentLocalCache({tabManager:F.persistentMultipleTabManager()})});
+  let noCache=false; try{ noCache=localStorage.getItem("gb-nocache")==="1"; }catch(e){}
+  const db=F.initializeFirestore(app,{localCache:noCache?F.memoryLocalCache():F.persistentLocalCache({tabManager:F.persistentMultipleTabManager()})});
   return {
     onAuth:cb=>F.onAuthStateChanged(auth,u=>cb(u?{email:u.email,uid:u.uid}:null)),
     signIn:async(e,p)=>{ await F.setPersistence(auth,F.browserLocalPersistence); await F.signInWithEmailAndPassword(auth,e,p); },
@@ -1783,22 +1784,39 @@ addEventListener("error",e=>{ try{ toast("Something went wrong: "+(e.message||"e
 addEventListener("unhandledrejection",e=>{ try{ toast("Something went wrong: "+((e.reason&&e.reason.message)||e.reason)+". Please tell support."); }catch(x){} });
 let STARTED=false, LOAD_ERR=null, LOADED=false;
 // Clear screen when the shared data can't be loaded, with the reason and what to try.
+// Repair: delete only Firebase's saved copy in this browser (the cloud data is untouched), done at the next start before Firebase opens it.
+const lsGet=k=>{ try{ return localStorage.getItem(k); }catch(e){ return null; } }, lsSet=(k,v)=>{ try{ v==null?localStorage.removeItem(k):localStorage.setItem(k,v); }catch(e){} };
+async function repairIfAsked(){
+  if(lsGet("gb-repair")!=="1") return; lsSet("gb-repair",null); lsSet("gb-repaired",String(Date.now()));
+  let names=[]; try{ names=(await indexedDB.databases()).map(d=>d.name).filter(n=>n&&n.startsWith("firestore/")); }catch(e){}
+  let blocked=false;
+  await Promise.all(names.map(n=>new Promise(r=>{ const q=indexedDB.deleteDatabase(n); q.onsuccess=q.onerror=()=>r(); q.onblocked=()=>{ blocked=true; r(); }; })));
+  if(blocked) toast("Close every other Ghost Bike tab or window, then tap Try again.");
+}
 function showLoadError(e){
-  const code=(e&&(e.code||e.message))||"no response";
+  const code=(e&&(e.code||e.message))||"no response", internal=/internal/i.test(code)&&!/permission/i.test(code);
+  const recent=Date.now()-(+lsGet("gb-repaired")||0)<15*60e3;
   const why=/permission/i.test(code)?"The cloud refused this login (security rules). Check the manager emails in Firebase → Firestore → Rules and press Publish."
     :/exhausted|quota/i.test(code)?"Today's free Firebase limit is used up. It resets at 10:00 Kuwait time, or upgrade the Firebase plan."
     :/unavailable|network|offline|no response|timeout/i.test(code)?"The cloud can't be reached from this network. Try another internet connection (for example the phone's mobile data)."
+    :internal?(recent?"The repair did not help on this browser. You can open the app without a saved copy on this computer: it works normally while online, but not offline."
+      :"This browser's saved copy of the data is damaged. Repair clears the saved copy on this computer only (the data in the cloud is safe) and loads it again. Close other Ghost Bike tabs first.")
     :"Please send this message to support.";
   let box=$("loadErr"); if(!box){ box=document.createElement("div"); box.id="loadErr"; document.body.appendChild(box); }
   box.innerHTML=`<div style="position:fixed;inset:0;background:rgba(20,26,34,.55);display:grid;place-items:center;z-index:999;padding:16px">
     <div style="background:#fff;color:#1b2430;border-radius:14px;max-width:460px;width:100%;padding:22px;font:15px system-ui;line-height:1.5">
       <h3 style="margin:0 0 8px">Can't load the shared data</h3><p style="margin:0 0 8px">${esc(why)}</p>
       <p style="margin:0 0 14px;color:#5a6573;font-size:13px">Details: ${esc(String(code))}</p>
+      ${internal&&!recent?`<button id="loadRepair" style="width:100%;padding:12px;border:0;border-radius:10px;background:#2f7d55;color:#fff;font-weight:700;font-size:15px;margin-bottom:8px">Repair and try again</button>`:""}
+      ${internal&&recent&&lsGet("gb-nocache")!=="1"?`<button id="loadNoCache" style="width:100%;padding:12px;border:0;border-radius:10px;background:#2f7d55;color:#fff;font-weight:700;font-size:15px;margin-bottom:8px">Open without saved copy</button>`:""}
       <button id="loadRetry" style="width:100%;padding:12px;border:0;border-radius:10px;background:#1b2430;color:#fff;font-weight:700;font-size:15px">Try again</button></div></div>`;
   $("loadRetry").onclick=()=>location.reload();
+  if($("loadRepair")) $("loadRepair").onclick=()=>{ lsSet("gb-repair","1"); location.reload(); };
+  if($("loadNoCache")) $("loadNoCache").onclick=()=>{ lsSet("gb-nocache","1"); lsSet("gb-repair","1"); location.reload(); };
 }
 (async()=>{
   try{
+    await repairIfAsked();
     if(window.MOCK_CLOUD) CLOUD=window.MOCK_CLOUD;
     else{ if(!window.FBSDK||!window.FIREBASE_CONFIG) throw new Error("firebase.js or config.js is missing from the app files"); CLOUD=firebaseCloud(window.FIREBASE_CONFIG); }
   }catch(e){ document.body.innerHTML=`<p style="padding:30px;font:16px system-ui">The app could not start: ${esc(e.message)}.</p>`; return; }
