@@ -673,7 +673,7 @@ function watchDays(cl){ return cl.watch("days",m=>{ DAYS_LOG={}; BASE.days={}; m
 function startWatchers(){
   const need=new Set(["config","units","customers","drafts","orders"]); let resolveReady; const ready=new Promise(r=>resolveReady=r);
   const done=c=>{ need.delete(c); if(!need.size) resolveReady(); };
-  const err=e=>{ LOAD_ERR=e; toast("Cloud connection problem: "+(e.code||e.message)); if(!LOADED) showLoadError(e); };
+  const err=e=>toast("Cloud connection problem: "+(e.code||e.message));
   CLOUD.watch("config",m=>{ let s=m.get("settings"), b=m.get("bikes");
     if(s&&(s.rev||0)<MY_SET_REV){ s=null; b=null; }          // an older copy arriving after our own save: keep ours
     if(s) SET={...DEFAULT_SETTINGS,...s,offers:{...DEFAULT_SETTINGS.offers,...s.offers},company:{...DEFAULT_SETTINGS.company,...s.company},accounts:{...DEFAULT_SETTINGS.accounts,...s.accounts}};
@@ -782,12 +782,13 @@ function offerDetail(k,p){return {sn:"First hour free on the rider's bike",ly:"F
 // pseudo-order from the ticket on screen
 function ticketCtx(){return {nbk:S.nbk,dow:todayDow(),dayOffer:S.dayOffer,p:SET.offers};}
 // Sunday/Wednesday: a chip on each bike shows who gets the day offer. Tap it on a bike ridden by someone who doesn't qualify.
-function dayChip(code,b){ const dow=todayDow(); if(!S.dayOffer||!(dow===0||(dow===3&&b.wed))) return "";
-  const on=!(S.dayOff||[]).includes(code), sym=dow===0?"♂ Man":"♀ Lady";
+const sunMulti=()=>todayDow()===0&&S.sel.length>1&&!S.dayOffer;   // Sunday group, customer not a man: tick each man's bike
+function dayChip(code,b){ const dow=todayDow(); if(!(dow===0||(dow===3&&b.wed))) return ""; if(!S.dayOffer&&!(dow===0&&sunMulti())) return "";
+  const on=S.dayOffer?!(S.dayOff||[]).includes(code):(S.dayOn||[]).includes(code), sym=dow===0?"♂ Man":"♀ Lady";
   return `<button class="snchip daychip" data-daycode="${code}" aria-pressed="${on}" title="${dow===0?"Sunday men's":"Wednesday ladies"} offer on this bike">${sym}</button>`; }
-function ticketLine(code,i){const u=unit(code),b=bikeById(u.bikeId);return {code,bikeId:b.id,name:b.name,rate:b.rate,mon:b.mon,wed:b.wed,sn:S.sn&&(S.snCodes||[]).includes(code),ly:S.ly&&(S.lyCodes||[]).includes(code),day:S.dayOffer&&!(S.dayOff||[]).includes(code)};}
+function ticketLine(code,i){const u=unit(code),b=bikeById(u.bikeId);return {code,bikeId:b.id,name:b.name,rate:b.rate,mon:b.mon,wed:b.wed,sn:S.sn&&(S.snCodes||[]).includes(code),ly:S.ly&&(S.lyCodes||[]).includes(code),day:S.dayOffer?!(S.dayOff||[]).includes(code):(sunMulti()&&(S.dayOn||[]).includes(code))};}
 /* ================= 1 · NEW RENTAL ================= */
-const S={hours:1,ly:false,lyCodes:[],lyRef:"",sel:[],snCodes:[],dayOff:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,q:"",cat:"Popular",draftId:null,
+const S={hours:1,ly:false,lyCodes:[],lyRef:"",sel:[],snCodes:[],dayOff:[],dayOn:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,q:"",cat:"Popular",draftId:null,
   pay:{mode:"single",method:"KNET",lines:[],rider:{}},pc:{}};
 const custById=id=>CUSTOMERS.find(c=>c.id===id);
 const qualifies=(g,dow)=>(dow===0&&g==="Male")||(dow===3&&g==="Female");
@@ -806,7 +807,7 @@ function renderCustomer(){
 }
 function selectCustomer(id){
   const c=custById(id); S.custId=id; S.walkin=false; $("phone").value=fmtPhone(c.phone);
-  S.dayOffer=qualifies(c.gender,todayDow()); S.dayOff=[]; render();
+  S.dayOffer=qualifies(c.gender,todayDow()); S.dayOff=[]; S.dayOn=[]; render();
 }
 function openNewCustomer(){
   const ph=normPhone($("phone").value); const NC={gender:"",tried:false};
@@ -846,7 +847,8 @@ function renderNew(){
   const dow=todayDow(), ctx=ticketCtx();
   renderCustomer();
   // day offer toggle
-  const dd={0:["Sunday men's offer",`${SET.offers.sunPct}% off · on each bike, tap ♂ off if the rider isn't a man`],3:["Wednesday ladies offer",`${f(SET.offers.wedPrice)} KWD/hour + free coffee · on each bike, tap ♀ off if the rider isn't a lady`]}[dow];
+  S.dayOn=(S.dayOn||[]).filter(c=>S.sel.includes(c));
+  const dd={0:["Sunday men's offer",`${SET.offers.sunPct}% off · on each bike, tap ♂ off if the rider isn't a man${!S.dayOffer&&S.sel.length>1?" · 2+ bikes: tap ♂ Man on each man's bike":""}`],3:["Wednesday ladies offer",`${f(SET.offers.wedPrice)} KWD/hour + free coffee · on each bike, tap ♀ off if the rider isn't a lady`]}[dow];
   const g=(custById(S.custId)||{}).gender;
   $("dayOfferBox").innerHTML=dd?`<button class="toggle" id="tDay" aria-pressed="${S.dayOffer}"><span>${dd[0]}<small>${dd[1]}${g?` · customer is ${g}`:""}</small></span><span class="sw" aria-hidden="true"></span></button>`:"";
   if(!dd) S.dayOffer=false;
@@ -864,7 +866,7 @@ function renderNew(){
   const main=["sn","ly","nbk","sun","mon","wed"].find(k=>keys.includes(k))||(lines.length?"none":fallback);
   const box=$("offer"); box.className="offer"+(main==="none"?" none":"");
   box.innerHTML=`${OFFER_LABEL[main]}<small>${offerDetail(main,SET.offers)}${keys.length>1?" · other bikes: "+keys.filter(k=>k!==main).map(k=>OFFER_LABEL[k]).join(", "):""}</small>`;
-  const rules=[["sn","Special needs",S.sn],["ly","Loyalty member",S.ly],["nbk","NBK employee",S.nbk],["sun","Sunday · men",dow===0&&S.dayOffer],["mon","Monday · selected bikes",dow===1],["wed","Wednesday · ladies",dow===3&&S.dayOffer]];
+  const rules=[["sn","Special needs",S.sn],["ly","Loyalty member",S.ly],["nbk","NBK employee",S.nbk],["sun","Sunday · men",dow===0&&(S.dayOffer||(S.dayOn||[]).length>0)],["mon","Monday · selected bikes",dow===1],["wed","Wednesday · ladies",dow===3&&S.dayOffer]];
   const reasonOf=k=>{ if(!lines.length) return "available today";
     if((k==="sun"||k==="mon"||k==="wed")&&S.nbk) return "replaced by NBK";
     if(k==="mon"||k==="wed") return "not on these bikes";
@@ -1015,8 +1017,8 @@ async function confirmOrder(){
 /* ---------- held tickets ---------- */
 function hasContent(){return S.sel.length||S.pay.lines.length||S.custId||S.walkin;}
 function curWho(){const c=custById(S.custId);return c?c.name:S.walkin?"Walk-in":(digits($("phone").value)||"New customer");}
-function snap(){return {hours:S.hours,ly:S.ly,lyCodes:[...(S.lyCodes||[])],lyRef:S.lyRef||"",sel:[...S.sel],custId:S.custId,walkin:S.walkin,sn:S.sn,snCodes:[...(S.snCodes||[])],dayOff:[...(S.dayOff||[])],nbk:S.nbk,dayOffer:S.dayOffer,pay:JSON.parse(JSON.stringify(S.pay)),phone:$("phone").value,who:curWho(),at:NOW()};}
-function resetTicket(){Object.assign(S,{hours:1,ly:false,lyCodes:[],lyRef:"",sel:[],snCodes:[],dayOff:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,draftId:null,pay:{mode:S.pay.mode,method:SET.methods[0],lines:[],rider:{}}});$("phone").value="";}
+function snap(){return {hours:S.hours,ly:S.ly,lyCodes:[...(S.lyCodes||[])],lyRef:S.lyRef||"",sel:[...S.sel],custId:S.custId,walkin:S.walkin,sn:S.sn,snCodes:[...(S.snCodes||[])],dayOff:[...(S.dayOff||[])],dayOn:[...(S.dayOn||[])],nbk:S.nbk,dayOffer:S.dayOffer,pay:JSON.parse(JSON.stringify(S.pay)),phone:$("phone").value,who:curWho(),at:NOW()};}
+function resetTicket(){Object.assign(S,{hours:1,ly:false,lyCodes:[],lyRef:"",sel:[],snCodes:[],dayOff:[],dayOn:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,draftId:null,pay:{mode:S.pay.mode,method:SET.methods[0],lines:[],rider:{}}});$("phone").value="";}
 async function holdCurrent(forceNew){
   if(hasContent()){
     const id=S.draftId||numFmt("draft",(await allocNos({draft:1})).draft);
@@ -1033,7 +1035,7 @@ async function resumeDraft(id){
   const d=DRAFTS.find(x=>x.id===id); if(!d) return;
   DRAFTS=DRAFTS.filter(x=>x.id!==id);
   d.sel.forEach(c=>{const u=unit(c); if(u&&u.st==="draft"&&(u.draft===id||!u.draft)){ u.st="free"; u.draft=null; }});
-  Object.assign(S,{hours:d.hours||1,ly:!!d.ly,lyCodes:d.lyCodes||[],lyRef:d.lyRef||"",sel:d.sel.filter(c=>unit(c)&&unit(c).st==="free"),custId:d.custId,walkin:d.walkin,sn:d.sn,snCodes:d.snCodes||[],dayOff:d.dayOff||[],nbk:d.nbk,dayOffer:d.dayOffer,pay:d.pay,draftId:id});
+  Object.assign(S,{hours:d.hours||1,ly:!!d.ly,lyCodes:d.lyCodes||[],lyRef:d.lyRef||"",sel:d.sel.filter(c=>unit(c)&&unit(c).st==="free"),custId:d.custId,walkin:d.walkin,sn:d.sn,snCodes:d.snCodes||[],dayOff:d.dayOff||[],dayOn:d.dayOn||[],nbk:d.nbk,dayOffer:d.dayOffer,pay:d.pay,draftId:id});
   $("phone").value=d.phone||""; persist("drafts","units");
   showView("new"); refreshAll(); toast(`${id} resumed where you left off.`);
 }
@@ -1620,7 +1622,6 @@ function saveSettings(){ return saveAllSettings(); }
 let VIEW="new";
 let SETDIRTY=false;
 function showView(v){
-  if(!LOADED){ toast("Still loading the shared data. Please wait a moment."); return; }
   if((v==="report"||v==="settings")&&!isAdmin()) return openUnlock(v);
   if(VIEW==="settings"&&v!=="settings"&&SETDIRTY){ if(confirm("You have unsaved changes in Settings. Save them now?")) saveSettings(); SETDIRTY=false; }
   VIEW=v; document.querySelectorAll("[data-view]").forEach(b=>b.setAttribute("aria-selected",b.dataset.view===v));
@@ -1673,14 +1674,17 @@ document.addEventListener("click",e=>{
   // new rental
   if(x=c("[data-b]")) return addOrRemove(x.dataset.b,Number(x.dataset.d));
   if(x=c("[data-add]")) return addOrRemove(x.dataset.add,1);
-  if(x=c("[data-swap]")){ const u=unit(x.dataset.swap), nx=nextFree(u.bikeId); if(nx){S.sel[S.sel.indexOf(u.code)]=nx.code; S.snCodes=(S.snCodes||[]).map(v=>v===u.code?nx.code:v); S.lyCodes=(S.lyCodes||[]).map(v=>v===u.code?nx.code:v); S.dayOff=(S.dayOff||[]).map(v=>v===u.code?nx.code:v); render();toast(`${u.code} swapped for ${nx.code}`);} else toast("No other free bike of this type."); return; }
+  if(x=c("[data-swap]")){ const u=unit(x.dataset.swap), nx=nextFree(u.bikeId); if(nx){S.sel[S.sel.indexOf(u.code)]=nx.code; S.snCodes=(S.snCodes||[]).map(v=>v===u.code?nx.code:v); S.lyCodes=(S.lyCodes||[]).map(v=>v===u.code?nx.code:v); S.dayOff=(S.dayOff||[]).map(v=>v===u.code?nx.code:v); S.dayOn=(S.dayOn||[]).map(v=>v===u.code?nx.code:v); render();toast(`${u.code} swapped for ${nx.code}`);} else toast("No other free bike of this type."); return; }
   if(x=c("[data-cat]")){ S.cat=x.dataset.cat; S.q=""; $("bq").value=""; return render(); }
   if(x=c("[data-cust]")) return selectCustomer(x.dataset.cust);
-  if(c("[data-cust-clear]")){ S.custId=null; S.walkin=false; S.dayOffer=false; $("phone").value=""; render(); return $("phone").focus(); }
+  if(c("[data-cust-clear]")){ S.custId=null; S.walkin=false; S.dayOffer=false; S.dayOn=[]; $("phone").value=""; render(); return $("phone").focus(); }
   if(c("[data-newcust]")) return openNewCustomer();
   if(c("[data-walkin]")){ S.walkin=true; S.custId=null; return render(); }
-  if(c("#tDay")){ S.dayOffer=!S.dayOffer; S.dayOff=[]; return render(); }
-  if(x=c("[data-daycode]")){ const k=x.dataset.daycode; S.dayOff=(S.dayOff||[]).includes(k)?S.dayOff.filter(v=>v!==k):[...(S.dayOff||[]),k]; return render(); }
+  if(c("#tDay")){ S.dayOffer=!S.dayOffer; S.dayOff=[]; S.dayOn=[]; return render(); }
+  if(x=c("[data-daycode]")){ const k=x.dataset.daycode;
+    if(S.dayOffer) S.dayOff=(S.dayOff||[]).includes(k)?S.dayOff.filter(v=>v!==k):[...(S.dayOff||[]),k];
+    else S.dayOn=(S.dayOn||[]).includes(k)?S.dayOn.filter(v=>v!==k):[...(S.dayOn||[]),k];
+    return render(); }
   if(c("#tSN")){ S.sn=!S.sn; S.snCodes=S.sn&&S.sel.length?[S.sel[0]]:[]; if(S.sn&&S.sel.length>1) toast("Special needs is on for "+S.sel[0]+". Tap SN on another bike to move it."); return render(); }
   if(x=c("[data-hrs]")){ if(S.pay.lines.length||Object.keys(S.pay.rider||{}).length) return toast("Payment already taken. Remove it first (×), then change the hours."); S.hours=Math.max(1,Math.min(12,+x.dataset.hrs)); return render(); }
   if(c("#tLY")){ S.ly=!S.ly; S.lyCodes=S.ly&&S.sel.length?[S.sel[0]]:[]; if(!S.ly) S.lyRef=""; if(S.ly&&S.sel.length>1) toast("Loyalty is on for "+S.sel[0]+". Tap ★ Loyal on another bike to move it."); return render(); }
@@ -1781,22 +1785,7 @@ $("loginForm").onsubmit=async e=>{ e.preventDefault(); $("lgBtn").disabled=true;
   finally{ $("lgBtn").disabled=false; } };
 addEventListener("error",e=>{ try{ toast("Something went wrong: "+(e.message||"error")+". Please tell support."); }catch(x){} });
 addEventListener("unhandledrejection",e=>{ try{ toast("Something went wrong: "+((e.reason&&e.reason.message)||e.reason)+". Please tell support."); }catch(x){} });
-let STARTED=false, LOAD_ERR=null, LOADED=false;
-// Clear screen when the shared data can't be loaded, with the reason and what to try.
-function showLoadError(e){
-  const code=(e&&(e.code||e.message))||"no response";
-  const why=/permission/i.test(code)?"The cloud refused this login (security rules). Check the manager emails in Firebase → Firestore → Rules and press Publish."
-    :/exhausted|quota/i.test(code)?"Today's free Firebase limit is used up. It resets at 10:00 Kuwait time, or upgrade the Firebase plan."
-    :/unavailable|network|offline|no response|timeout/i.test(code)?"The cloud can't be reached from this network. Try another internet connection (for example the phone's mobile data)."
-    :"Please send this message to support.";
-  let box=$("loadErr"); if(!box){ box=document.createElement("div"); box.id="loadErr"; document.body.appendChild(box); }
-  box.innerHTML=`<div style="position:fixed;inset:0;background:rgba(20,26,34,.55);display:grid;place-items:center;z-index:999;padding:16px">
-    <div style="background:#fff;color:#1b2430;border-radius:14px;max-width:460px;width:100%;padding:22px;font:15px system-ui;line-height:1.5">
-      <h3 style="margin:0 0 8px">Can't load the shared data</h3><p style="margin:0 0 8px">${esc(why)}</p>
-      <p style="margin:0 0 14px;color:#5a6573;font-size:13px">Details: ${esc(String(code))}</p>
-      <button id="loadRetry" style="width:100%;padding:12px;border:0;border-radius:10px;background:#1b2430;color:#fff;font-weight:700;font-size:15px">Try again</button></div></div>`;
-  $("loadRetry").onclick=()=>location.reload();
-}
+let STARTED=false;
 (async()=>{
   try{
     if(window.MOCK_CLOUD) CLOUD=window.MOCK_CLOUD;
@@ -1809,9 +1798,8 @@ function showLoadError(e){
     $("login").hidden=true; $("userLbl").textContent=user.email.split("@")[0];
     if(STARTED) return; STARTED=true;
     toast("Loading shared data…");
-    try{ await withTimeout(loadAll(),25000); await loadFolder(); }
-    catch(e){ showLoadError(LOAD_ERR||e); return; }
-    LOADED=true;
+    try{ await loadAll(); await loadFolder(); }
+    catch(e){ toast("Could not load: "+e.message); return; }
     S.pay.method=SET.methods[0];
     refreshAll(); showView("new"); checkBanner();
     try{ const old=await allOrders(); META.oldLocal=old.length&&!META.imported?old.length:0; }catch(e){}
