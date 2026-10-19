@@ -673,7 +673,7 @@ function watchDays(cl){ return cl.watch("days",m=>{ DAYS_LOG={}; BASE.days={}; m
 function startWatchers(){
   const need=new Set(["config","units","customers","drafts","orders"]); let resolveReady; const ready=new Promise(r=>resolveReady=r);
   const done=c=>{ need.delete(c); if(!need.size) resolveReady(); };
-  const err=e=>toast("Cloud connection problem: "+(e.code||e.message));
+  const err=e=>{ LOAD_ERR=e; toast("Cloud connection problem: "+(e.code||e.message)); if(!LOADED) showLoadError(e); };
   CLOUD.watch("config",m=>{ let s=m.get("settings"), b=m.get("bikes");
     if(s&&(s.rev||0)<MY_SET_REV){ s=null; b=null; }          // an older copy arriving after our own save: keep ours
     if(s) SET={...DEFAULT_SETTINGS,...s,offers:{...DEFAULT_SETTINGS.offers,...s.offers},company:{...DEFAULT_SETTINGS.company,...s.company},accounts:{...DEFAULT_SETTINGS.accounts,...s.accounts}};
@@ -1620,6 +1620,7 @@ function saveSettings(){ return saveAllSettings(); }
 let VIEW="new";
 let SETDIRTY=false;
 function showView(v){
+  if(!LOADED){ toast("Still loading the shared data. Please wait a moment."); return; }
   if((v==="report"||v==="settings")&&!isAdmin()) return openUnlock(v);
   if(VIEW==="settings"&&v!=="settings"&&SETDIRTY){ if(confirm("You have unsaved changes in Settings. Save them now?")) saveSettings(); SETDIRTY=false; }
   VIEW=v; document.querySelectorAll("[data-view]").forEach(b=>b.setAttribute("aria-selected",b.dataset.view===v));
@@ -1780,7 +1781,22 @@ $("loginForm").onsubmit=async e=>{ e.preventDefault(); $("lgBtn").disabled=true;
   finally{ $("lgBtn").disabled=false; } };
 addEventListener("error",e=>{ try{ toast("Something went wrong: "+(e.message||"error")+". Please tell support."); }catch(x){} });
 addEventListener("unhandledrejection",e=>{ try{ toast("Something went wrong: "+((e.reason&&e.reason.message)||e.reason)+". Please tell support."); }catch(x){} });
-let STARTED=false;
+let STARTED=false, LOAD_ERR=null, LOADED=false;
+// Clear screen when the shared data can't be loaded, with the reason and what to try.
+function showLoadError(e){
+  const code=(e&&(e.code||e.message))||"no response";
+  const why=/permission/i.test(code)?"The cloud refused this login (security rules). Check the manager emails in Firebase → Firestore → Rules and press Publish."
+    :/exhausted|quota/i.test(code)?"Today's free Firebase limit is used up. It resets at 10:00 Kuwait time, or upgrade the Firebase plan."
+    :/unavailable|network|offline|no response|timeout/i.test(code)?"The cloud can't be reached from this network. Try another internet connection (for example the phone's mobile data)."
+    :"Please send this message to support.";
+  let box=$("loadErr"); if(!box){ box=document.createElement("div"); box.id="loadErr"; document.body.appendChild(box); }
+  box.innerHTML=`<div style="position:fixed;inset:0;background:rgba(20,26,34,.55);display:grid;place-items:center;z-index:999;padding:16px">
+    <div style="background:#fff;color:#1b2430;border-radius:14px;max-width:460px;width:100%;padding:22px;font:15px system-ui;line-height:1.5">
+      <h3 style="margin:0 0 8px">Can't load the shared data</h3><p style="margin:0 0 8px">${esc(why)}</p>
+      <p style="margin:0 0 14px;color:#5a6573;font-size:13px">Details: ${esc(String(code))}</p>
+      <button id="loadRetry" style="width:100%;padding:12px;border:0;border-radius:10px;background:#1b2430;color:#fff;font-weight:700;font-size:15px">Try again</button></div></div>`;
+  $("loadRetry").onclick=()=>location.reload();
+}
 (async()=>{
   try{
     if(window.MOCK_CLOUD) CLOUD=window.MOCK_CLOUD;
@@ -1793,8 +1809,9 @@ let STARTED=false;
     $("login").hidden=true; $("userLbl").textContent=user.email.split("@")[0];
     if(STARTED) return; STARTED=true;
     toast("Loading shared data…");
-    try{ await loadAll(); await loadFolder(); }
-    catch(e){ toast("Could not load: "+e.message); return; }
+    try{ await withTimeout(loadAll(),25000); await loadFolder(); }
+    catch(e){ showLoadError(LOAD_ERR||e); return; }
+    LOADED=true;
     S.pay.method=SET.methods[0];
     refreshAll(); showView("new"); checkBanner();
     try{ const old=await allOrders(); META.oldLocal=old.length&&!META.imported?old.length:0; }catch(e){}
