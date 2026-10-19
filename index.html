@@ -528,7 +528,7 @@ const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturda
 
 /* ---------- defaults (from the live Odoo product list and pricelists, 30 Sep 2026) ---------- */
 const DEFAULT_SETTINGS={
-  company:{name:"Ghost Bike",ar:"جوست بايك",line:"Bicycle rental · Kuwait",cashier:"Counter 1"},
+  company:{name:"Ghost Bike",ar:"جوست بايك",line:"Bicycle rental · Kuwait",phone:"50825528",cashier:"Counter 1"},
   offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:40,returnGrace:30},
   methods:["KNET","Cash","Card","Pay link"],
   accounts:{journal:"",revenue:"","KNET":"","Cash":"","Card":"","Pay link":""},
@@ -673,7 +673,7 @@ function watchDays(cl){ return cl.watch("days",m=>{ DAYS_LOG={}; BASE.days={}; m
 function startWatchers(){
   const need=new Set(["config","units","customers","drafts","orders"]); let resolveReady; const ready=new Promise(r=>resolveReady=r);
   const done=c=>{ need.delete(c); if(!need.size) resolveReady(); };
-  const err=e=>toast("Cloud connection problem: "+(e.code||e.message));
+  const err=e=>{ LOAD_ERR=e; toast("Cloud connection problem: "+(e.code||e.message)); if(!LOADED) showLoadError(e); };
   CLOUD.watch("config",m=>{ let s=m.get("settings"), b=m.get("bikes");
     if(s&&(s.rev||0)<MY_SET_REV){ s=null; b=null; }          // an older copy arriving after our own save: keep ours
     if(s) SET={...DEFAULT_SETTINGS,...s,offers:{...DEFAULT_SETTINGS.offers,...s.offers},company:{...DEFAULT_SETTINGS.company,...s.company},accounts:{...DEFAULT_SETTINGS.accounts,...s.accounts}};
@@ -996,11 +996,13 @@ async function confirmOrder(){
   o.id=numFmt("order",nos.order);
   sel.forEach(code=>{ const u=unit(code); if(u){ u.st="held"; u.draft=null; } });
   persist("units");
+  // Wednesday ladies offer: one free coffee voucher per bike on the offer (codes unique within the order)
+  { const A="ABCDEFGHJKLMNPQRSTUVWXYZ23456789", used=new Set(); o.lines.forEach(l=>{ if(lineKey(o,l)!=="wed") return; let v;
+      do{ v="CAFE-"; for(let i=0;i<6;i++) v+=A[Math.floor(Math.random()*A.length)]; }while(used.has(v)); used.add(v); l.voucher=v; }); }
   const pays=S.pay.mode==="riders"?o.lines.filter(l=>l.adv>0.0005).map(l=>({m:S.pay.rider[l.code],amt:l.adv})):S.pay.lines.map(p=>({...p}));
   { const free=adv<0.0005, full=l=>r3(l.rate*PH), why=l=>l.sn?"Special needs":l.ly?"Loyalty":"Offer";
     newInvoice(numFmt("inv",nos.inv),o,free?"No charge · free ride":PH===1?"Advance · 1st hour":`Advance · ${PH} hours`,o.lines.map(l=>l.code),adv,free?[]:pays,
-      l=>({code:l.code,name:l.name,desc:(PH===1?(l.sn?"1st hour · Special needs (free)":l.ly?"1st hour · Loyalty (free)":"1st hour (advance)"):`${PH} hours paid in advance${l.sn?" · 1st hour free (special needs)":l.ly?" · 1st hour free (loyalty)":""}`)+(l.adv<0.0005?` · value ${f(full(l))}, ${why(l)} −${f(full(l))}`:""),amt:l.adv})); }
-  if(o.lines.some(l=>lineKey(o,l)==="wed")){ const A="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; let v=""; for(let i=0;i<6;i++) v+=A[Math.floor(Math.random()*A.length)]; o.voucher="CAFE-"+v; }
+      l=>({code:l.code,name:l.name,desc:(PH===1?(l.sn?"1st hour · Special needs (free)":l.ly?"1st hour · Loyalty (free)":"1st hour (advance)"):`${PH} hours paid in advance${l.sn?" · 1st hour free (special needs)":l.ly?" · 1st hour free (loyalty)":""}`)+(l.adv<0.0005?` · value ${f(full(l))}, ${why(l)} −${f(full(l))}`:""),amt:l.adv,...(l.voucher?{voucher:l.voucher}:{})})); }
   ORDERS.unshift(o); BASE.orders[o.id]=undefined; CLOUD.write([{t:"set",col:"orders",id:o.id,data:clean(o)}]).catch(e=>toast("Cloud save failed: "+e.message));
   if(draftId){ DRAFTS=DRAFTS.filter(d=>d.id!==draftId); persist("drafts"); }
   const inv=o.invoices[0];
@@ -1249,10 +1251,12 @@ async function doRefund(){
 }
 
 /* ================= documents: receipt, invoice, WhatsApp ================= */
+// Coffee vouchers of an order: one per Wednesday-offer bike. Older orders kept a single code for the whole order.
+const vouchersOf=o=>{ const v=o.lines.filter(l=>l.voucher).map(l=>({code:l.voucher,bike:l.code})); return v.length?v:(o.voucher?[{code:o.voucher,bike:""}]:[]); };
 const rctNo=inv=>inv.no.replace(/^PR?INV/,"PRCT");
 function receiptHTML(o,inv){
   const cr=inv.amount<0, C=SET.company;
-  return `<div class="rcpt"><div class="rc-h"><b>${esc(C.name)}</b><div>${esc(C.ar)}</div><small>${esc(C.line)}</small></div>
+  return `<div class="rcpt"><div class="rc-h"><b>${esc(C.name)}</b><div>${esc(C.ar)}</div><small>${esc(C.line)}</small>${C.phone?`<small style="display:block">Tel · هاتف ${esc(C.phone)}</small>`:""}</div>
     <div class="rc-t">${cr?"CASH REFUND RECEIPT":"CASH RECEIPT"}<br><small>${cr?"إيصال استرداد":"إيصال قبض"}</small></div>
     <div class="prov">Provisional receipt · official invoice issued in Odoo</div>
     <div class="rc-kv"><span>Receipt</span><span>${rctNo(inv)}</span></div><div class="rc-kv"><span>${cr?"Credit note":"Invoice"}</span><span>${inv.no}</span></div>
@@ -1261,12 +1265,12 @@ function receiptHTML(o,inv){
     <div class="rc-rule"></div>${inv.items.map(i=>`<div class="rc-item"><span>${i.code} ${esc(i.name)}<small>${esc(i.desc)}</small></span><span>${f(i.amt)}</span></div>`).join("")}
     <div class="rc-rule"></div><div class="rc-kv tot"><span>${cr?"Refunded":"Total"} KWD</span><span>${f(Math.abs(inv.amount))}</span></div>
     ${inv.pays.length?"":`<div class="rc-kv"><span>Paid</span><span>No charge</span></div>`}${inv.pays.map(p=>`<div class="rc-kv"><span>${cr?"Paid out":"Paid"} · ${esc(p.m)}</span><span>${f(Math.abs(p.amt))}</span></div>${p.change?`<div class="rc-kv"><span>Cash given</span><span>${f(p.amt+p.change)}</span></div><div class="rc-kv"><span>Change</span><span>${f(p.change)}</span></div>`:""}`).join("")}
-    ${(!cr&&/Advance/.test(inv.kind)&&o.voucher)?`<div class="rc-rule"></div><div class="rc-v">FREE COFFEE VOUCHER<br><small>قهوة مجانية من المقهى</small><br><span style="font-size:16px;letter-spacing:2px">${o.voucher}</span><br>1 coffee · ${o.id}<br><small>Valid today at the café next door. One per customer, one use only.</small></div>`:""}
+    ${(!cr&&/Advance/.test(inv.kind))?vouchersOf(o).map(v=>`<div class="rc-rule"></div><div class="rc-v">FREE COFFEE VOUCHER<br><small>قهوة مجانية من المقهى</small><br><span style="font-size:16px;letter-spacing:2px">${v.code}</span><br>1 coffee · ${o.id}${v.bike?` · bike ${v.bike}`:""}<br><small>Valid today at the café next door. One coffee, one use only.</small></div>`).join(""):""}
     <div class="rc-rule"></div><div class="rc-f">${cr?"Refund given in cash.":`${o.p.halfUpTo!=null?`Back within ${o.p.graceMin} min: full refund. Within ${o.p.halfUpTo} min: half hour charged. `:""}Paid hours include ${graceOf(o)} min return grace. After that, every started hour is charged.`}<br>Served by ${esc((inv.by||"").split("@")[0]||C.cashier)} · شكراً لزيارتكم</div></div>`;
 }
 function invoiceHTML(o,inv){
   const cr=inv.amount<0, paid=r3(inv.pays.reduce((a,p)=>a+p.amt,0)), C=SET.company;
-  return `<div class="a4"><div class="a4-h"><div><b>${esc(C.name)}</b> <span>${esc(C.ar)}</span><div class="muted">${esc(C.line)}</div></div><div class="a4-t">${cr?"Credit Note":"Invoice"}<div class="muted">${cr?"إشعار دائن":"فاتورة"}</div><div class="muted" style="font-size:12px">Provisional (pilot)</div></div></div>
+  return `<div class="a4"><div class="a4-h"><div><b>${esc(C.name)}</b> <span>${esc(C.ar)}</span><div class="muted">${esc(C.line)}</div>${C.phone?`<div class="muted">Tel · هاتف ${esc(C.phone)}</div>`:""}</div><div class="a4-t">${cr?"Credit Note":"Invoice"}<div class="muted">${cr?"إشعار دائن":"فاتورة"}</div><div class="muted" style="font-size:12px">Provisional (pilot)</div></div></div>
     <div class="a4-meta"><div><small>Bill to</small><b>${esc(o.who)}</b><div>${fmtPhone(o.phone)}</div></div><div><small>Number</small><b>${inv.no}</b><small>Date</small><b>${dt(inv.at)}</b><small>Source</small><b>${o.id}</b></div></div>
     <table class="a4-tb"><tr><th>Bike</th><th>Description</th><th class="r">Amount KWD</th></tr>
     ${inv.items.map(i=>`<tr><td><b>${i.code}</b> ${esc(i.name)}</td><td>${esc(i.desc)}</td><td class="r">${f(i.amt)}</td></tr>`).join("")}
@@ -1299,7 +1303,7 @@ let WA=null;
 function openWA(id,no){
   const {o,inv}=findInv(id,no), cr=inv.amount<0; WA={id,no};
   const lines=inv.items.map(i=>`• ${i.code} ${i.name}: ${f(i.amt)}`).join("\n");
-  const msg=`${SET.company.name} · ${cr?"Refund receipt":"Receipt"} ${rctNo(inv)}\nOrder ${o.id} · ${dt(inv.at)}\n${lines}\n${cr?"Refunded":"Total"}: ${f(Math.abs(inv.amount))} KWD (${[...new Set(inv.pays.map(p=>p.m))].join(" + ")})${(!cr&&/Advance/.test(inv.kind)&&o.voucher)?`\nFree coffee voucher: ${o.voucher} (today, at the café next door)`:""}\n\nشكراً لاختياركم ${SET.company.ar}`;
+  const msg=`${SET.company.name} · ${cr?"Refund receipt":"Receipt"} ${rctNo(inv)}\nOrder ${o.id} · ${dt(inv.at)}\n${lines}\n${cr?"Refunded":"Total"}: ${f(Math.abs(inv.amount))} KWD (${[...new Set(inv.pays.map(p=>p.m))].join(" + ")})${(!cr&&/Advance/.test(inv.kind)&&vouchersOf(o).length)?`\nFree coffee voucher${vouchersOf(o).length>1?"s":""}: ${vouchersOf(o).map(v=>v.code).join(", ")} (today, at the café next door)`:""}${SET.company.phone?`\nTel: ${SET.company.phone}`:""}\n\nشكراً لاختياركم ${SET.company.ar}`;
   $("dlgBody").innerHTML=`<h3>Send on WhatsApp</h3><div class="meta">${o.id} · ${inv.no}</div>
     <label class="flabel" for="waPhone">Customer mobile</label><div class="field"><span class="cc">+${esc(SET.countryCode)}</span><input id="waPhone" class="finput num" inputmode="tel" value="${digits(o.phone)}" placeholder="8-digit mobile"></div>
     <div class="flabel">Message</div><textarea id="waMsg" class="finput" rows="8">${esc(msg)}</textarea>
@@ -1362,7 +1366,7 @@ function dayData(D){
   invs.forEach(({i})=>{ i.items.forEach(it=>{ if(it.amt>=0) rev[it.name]=r3((rev[it.name]||0)+it.amt); else ref[it.name]=r3((ref[it.name]||0)-it.amt); });
     i.pays.forEach(p=>{ if(p.amt>=0) pay[p.m]=r3((pay[p.m]||0)+p.amt); else cashRef=r3(cashRef-p.amt); }); });
   const created=ORDERS.filter(o=>dayKey(o.created)===D);
-  return {invs,rev,ref,pay,cashRef,created,bikes:created.reduce((a,o)=>a+o.lines.length,0),vouchers:created.filter(o=>o.voucher)};
+  return {invs,rev,ref,pay,cashRef,created,bikes:created.reduce((a,o)=>a+o.lines.length,0),vouchers:created.flatMap(o=>vouchersOf(o))};
 }
 function renderReport(){
   const D=$("repDate").value||dayKey(NOW()); $("repDate").value=D;
@@ -1374,7 +1378,7 @@ function renderReport(){
   const tbl=(title,obj,neg)=>`<div class="spanel"><h3>${title}</h3><table class="rtbl"><tr><th>Item</th><th class="r">KWD</th></tr>${Object.keys(obj).length?Object.entries(obj).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="r num">${f(neg?-v:v)}</td></tr>`).join(""):`<tr><td colspan="2" class="muted">None</td></tr>`}<tr class="t"><td>Total</td><td class="r num">${f(neg?-sum(obj):sum(obj))}</td></tr></table></div>`;
   $("reportBody").innerHTML=`
     <div class="spanel"><h3>${DAYS[new Date(D+"T12:00").getDay()]} ${D}</h3>
-      <p>${x.created.length} orders · ${x.bikes} bikes · ${x.invs.length} documents · ${x.vouchers.length} coffee voucher${x.vouchers.length===1?"":"s"} issued${x.vouchers.length?` (${x.vouchers.map(o=>o.voucher).join(", ")})`:""}</p>
+      <p>${x.created.length} orders · ${x.bikes} bikes · ${x.invs.length} documents · ${x.vouchers.length} coffee voucher${x.vouchers.length===1?"":"s"} issued${x.vouchers.length?` (${x.vouchers.map(v=>v.code).join(", ")})`:""}</p>
       ${D===dayKey(NOW())&&(openNow||toSettle||DRAFTS.length)?`<p class="warnmsg">Before closing: ${openNow} bike(s) still out or waiting · ${toSettle} to settle · ${DRAFTS.length} unfinished ticket(s).</p>`:""}
       <p><b>Net revenue:</b> <span class="num">${f(revT-refT)}</span> KWD (sales ${f(revT)} − refunds ${f(refT)})</p></div>
     <div class="rgrid">${tbl("Revenue by bike type",x.rev)}${tbl("Refunds by bike type",x.ref,true)}${tbl("Received by payment method",x.pay)}</div>
@@ -1407,7 +1411,7 @@ function exportJE(D){
 }
 function exportDetails(D){
   const rows=[["date","time","order","document","type","customer","mobile","bike code","bike","description","amount","payment methods","coffee voucher"]];
-  ORDERS.forEach(o=>o.invoices.forEach(i=>{ if(dayKey(i.at)!==D) return; i.items.forEach(it=>rows.push([D,clock(i.at),o.id,i.no,i.kind,o.who,o.phone,it.code,it.name,it.desc,f(it.amt),i.pays.map(p=>`${p.m} ${f(p.amt)}`).join(" + "),/Advance/.test(i.kind)?(o.voucher||""):""])); }));
+  ORDERS.forEach(o=>o.invoices.forEach(i=>{ if(dayKey(i.at)!==D) return; i.items.forEach(it=>rows.push([D,clock(i.at),o.id,i.no,i.kind,o.who,o.phone,it.code,it.name,it.desc,f(it.amt),i.pays.map(p=>`${p.m} ${f(p.amt)}`).join(" + "),/Advance/.test(i.kind)?(it.voucher||(!o.lines.some(l=>l.voucher)&&o.voucher)||""):""])); }));
   return {name:`ghostbike-details-${D}.csv`,data:csv(rows)};
 }
 function exportCustomers(){ const rows=[["name","phone","x_studio_selection_field_7b0_1k3j55c0l","ref"]]; CUSTOMERS.forEach(c=>rows.push([c.name,c.phone,c.gender,c.id]));
@@ -1536,7 +1540,7 @@ function renderSettings(){
     <p class="lnote">Changes apply to new orders only; confirmed orders keep the prices they were sold at.</p></div>
   <div class="spanel"><h3>Receipt and company</h3><div class="sgrid">
     <label>Name<input data-c="name" value="${esc(C.name)}"></label><label>Arabic name<input data-c="ar" value="${esc(C.ar)}" dir="rtl"></label>
-    <label>Receipt line<input data-c="line" value="${esc(C.line)}"></label><label>Counter / cashier name<input data-c="cashier" value="${esc(C.cashier)}"></label>
+    <label>Receipt line<input data-c="line" value="${esc(C.line)}"></label><label>Telephone on receipts<input data-c="phone" inputmode="tel" value="${esc(C.phone||"")}"></label><label>Counter / cashier name<input data-c="cashier" value="${esc(C.cashier)}"></label>
     <label>Payment methods (comma separated)<input id="sMethods" value="${esc(SET.methods.join(", "))}"></label><label>WhatsApp country code<input id="sCC" value="${esc(SET.countryCode)}"></label></div></div>
   <div class="spanel"><h3>Odoo accounts for the daily journal entry</h3><div class="sgrid">
     <label>Journal (code or name)<input data-a="journal" value="${esc(A.journal||"")}" placeholder="e.g. MISC"></label>
@@ -1616,6 +1620,7 @@ function saveSettings(){ return saveAllSettings(); }
 let VIEW="new";
 let SETDIRTY=false;
 function showView(v){
+  if(!LOADED){ toast("Still loading the shared data. Please wait a moment."); return; }
   if((v==="report"||v==="settings")&&!isAdmin()) return openUnlock(v);
   if(VIEW==="settings"&&v!=="settings"&&SETDIRTY){ if(confirm("You have unsaved changes in Settings. Save them now?")) saveSettings(); SETDIRTY=false; }
   VIEW=v; document.querySelectorAll("[data-view]").forEach(b=>b.setAttribute("aria-selected",b.dataset.view===v));
@@ -1776,7 +1781,22 @@ $("loginForm").onsubmit=async e=>{ e.preventDefault(); $("lgBtn").disabled=true;
   finally{ $("lgBtn").disabled=false; } };
 addEventListener("error",e=>{ try{ toast("Something went wrong: "+(e.message||"error")+". Please tell support."); }catch(x){} });
 addEventListener("unhandledrejection",e=>{ try{ toast("Something went wrong: "+((e.reason&&e.reason.message)||e.reason)+". Please tell support."); }catch(x){} });
-let STARTED=false;
+let STARTED=false, LOAD_ERR=null, LOADED=false;
+// Clear screen when the shared data can't be loaded, with the reason and what to try.
+function showLoadError(e){
+  const code=(e&&(e.code||e.message))||"no response";
+  const why=/permission/i.test(code)?"The cloud refused this login (security rules). Check the manager emails in Firebase → Firestore → Rules and press Publish."
+    :/exhausted|quota/i.test(code)?"Today's free Firebase limit is used up. It resets at 10:00 Kuwait time, or upgrade the Firebase plan."
+    :/unavailable|network|offline|no response|timeout/i.test(code)?"The cloud can't be reached from this network. Try another internet connection (for example the phone's mobile data)."
+    :"Please send this message to support.";
+  let box=$("loadErr"); if(!box){ box=document.createElement("div"); box.id="loadErr"; document.body.appendChild(box); }
+  box.innerHTML=`<div style="position:fixed;inset:0;background:rgba(20,26,34,.55);display:grid;place-items:center;z-index:999;padding:16px">
+    <div style="background:#fff;color:#1b2430;border-radius:14px;max-width:460px;width:100%;padding:22px;font:15px system-ui;line-height:1.5">
+      <h3 style="margin:0 0 8px">Can't load the shared data</h3><p style="margin:0 0 8px">${esc(why)}</p>
+      <p style="margin:0 0 14px;color:#5a6573;font-size:13px">Details: ${esc(String(code))}</p>
+      <button id="loadRetry" style="width:100%;padding:12px;border:0;border-radius:10px;background:#1b2430;color:#fff;font-weight:700;font-size:15px">Try again</button></div></div>`;
+  $("loadRetry").onclick=()=>location.reload();
+}
 (async()=>{
   try{
     if(window.MOCK_CLOUD) CLOUD=window.MOCK_CLOUD;
@@ -1789,8 +1809,9 @@ let STARTED=false;
     $("login").hidden=true; $("userLbl").textContent=user.email.split("@")[0];
     if(STARTED) return; STARTED=true;
     toast("Loading shared data…");
-    try{ await loadAll(); await loadFolder(); }
-    catch(e){ toast("Could not load: "+e.message); return; }
+    try{ await withTimeout(loadAll(),25000); await loadFolder(); }
+    catch(e){ showLoadError(LOAD_ERR||e); return; }
+    LOADED=true;
     S.pay.method=SET.methods[0];
     refreshAll(); showView("new"); checkBanner();
     try{ const old=await allOrders(); META.oldLocal=old.length&&!META.imported?old.length:0; }catch(e){}
