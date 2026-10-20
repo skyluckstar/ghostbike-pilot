@@ -431,7 +431,7 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
       <div class="sub"><span>Before offer</span><span class="num" id="gross">0.000</span></div>
       <div class="sub"><span>Offer savings</span><span class="num" id="save">0.000</span></div>
       <div class="tot"><span>Pay now (KWD)</span><span class="big num" id="total">0.000</span></div>
-      <div class="lnote">Pay now covers the hours chosen above, per bike, plus a 30-minute return grace. Back within 10 min: full refund; within 40 min: half an hour is charged and the rest refunded. The clock starts at pickup. Extra hours are paid at the front after return; unused paid hours are refunded in cash.</div>
+      <div class="lnote">Pay now covers the hours chosen above, per bike. Back within 10 min: full refund; within 40 min: half an hour is charged and the rest refunded. After each hour: 10 min free, up to 30 min = half an hour, then a full hour. The clock starts at pickup. Extra hours are paid at the front after return; unused paid hours are refunded in cash.</div>
     </div>
     <div class="payzone">
       <h2>Payment <span class="ar">الدفع</span></h2>
@@ -501,7 +501,13 @@ const chg=(ms,grace=30,paidH=1)=>{ const m=Math.max(0,Math.floor(ms/MIN)); let H
 const paidOf=l=>Math.max(1,+(l&&l.paidH)||1);
 // Short first ride: back within the free window (10 min) = nothing charged; within the half-hour band (40 min) = half an hour.
 // Orders confirmed before this rule existed (no halfUpTo saved) keep the old calculation.
+// Rule from v24 (orders saved with overFree): short first ride as before; then at the end of every hour
+// the first overFree minutes (10) are free, up to overHalf minutes (30) count half an hour, after that a full hour.
+function hoursRule(p,m){ const g=+p.graceMin, h=+p.halfUpTo, of=+p.overFree, oh=+p.overHalf;
+  if(m<=g) return 0; if(m<=h) return 0.5; if(m<=60) return 1;
+  const k=Math.floor(m/60), r=m-60*k; return r<=of?k:r<=oh?k+0.5:k+1; }
 function chargeH(o,l,ms){ const p=(o&&o.p)||{}, m=Math.max(0,Math.floor(ms/MIN));
+  if(p.overFree!=null) return hoursRule(p,m);
   if(p.halfUpTo!=null){ if(m<=+p.graceMin) return 0; if(m<=+p.halfUpTo) return 0.5; }
   return chg(ms,graceOf(o),paidOf(l)); }
 const fmtH=h=>{ const w=Math.floor(h), hf=h%1>0.001; return (w||!hf?w:"")+(hf?"½":"")+" h"; };
@@ -529,7 +535,7 @@ const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturda
 /* ---------- defaults (from the live Odoo product list and pricelists, 30 Sep 2026) ---------- */
 const DEFAULT_SETTINGS={
   company:{name:"Ghost Bike",ar:"جوست بايك",line:"Bicycle rental · Kuwait",phone:"50825528",cashier:"Counter 1"},
-  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:40,returnGrace:30},
+  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:40,returnGrace:30,overFree:10,overHalf:30},
   methods:["KNET","Cash","Card","Pay link"],
   accounts:{journal:"",revenue:"","KNET":"","Cash":"","Card":"","Pay link":""},
   countryCode:"965", testDay:"", backupHours:12
@@ -890,7 +896,7 @@ function renderNew(){
     :`<div class="empty">No bike matches “${esc(S.q)}”.</div>`;
   // ticket
   const HR=S.hours=Math.max(1,Math.min(12,parseInt(S.hours)||1));
-  $("hrs").innerHTML=S.sel.length?`<div class="hl"><b>Hours paid now</b><small>${HR===1?"Standard · 1st hour":`${HR} hours per bike`} + ${graceOf(null)} min grace</small></div>
+  $("hrs").innerHTML=S.sel.length?`<div class="hl"><b>Hours paid now</b><small>${HR===1?"Standard · 1st hour":`${HR} hours per bike`} + ${SET.offers.overFree??10} min free</small></div>
     <div class="hstep"><button data-hrs="${HR-1}" ${HR<=1?"disabled":""} aria-label="One hour less">−</button><output class="num">${HR} h</output><button data-hrs="${HR+1}" ${HR>=12?"disabled":""} aria-label="One more hour">+</button></div>`:"";
   const PC={}; lines.forEach(l=>PC[l.code]=priceFor(ctx,l,HR)); S.pc=PC;
   let G=0,N=0,html="";
@@ -1063,7 +1069,8 @@ function lineByCode(c,openOnly){for(const o of ORDERS)for(const l of o.lines)if(
 const orderOf=l=>ORDERS.find(o=>o.lines.includes(l));
 const DF={q:"",st:"all"};
 const DST=[["all","All"],["waiting","Waiting pickup"],["riding","Riding"],["over","Past grace"]];
-function lineMatchesSt(l,st){ if(st==="all") return OPEN.includes(l.state); if(st==="over") return l.state==="riding"&&Math.floor((NOW()-l.pick)/MIN)>paidOf(l)*60+graceOf(orderOf(l)); return l.state===st; }
+const overFreeOf=o=>(o&&o.p&&o.p.overFree!=null)?+o.p.overFree:graceOf(o);
+function lineMatchesSt(l,st){ if(st==="all") return OPEN.includes(l.state); if(st==="over") return l.state==="riding"&&Math.floor((NOW()-l.pick)/MIN)>paidOf(l)*60+overFreeOf(orderOf(l)); return l.state===st; }
 function matchQ(q,id,who,phone,codes){ q=q.trim().toLowerCase(); if(!q) return true; const d=digits(q);
   return id.toLowerCase().includes(q)||who.toLowerCase().includes(q)||(d.length>=3&&digits(phone).includes(d))||codes.some(c=>c.toLowerCase().includes(q)); }
 function lineStatus(l){
@@ -1071,7 +1078,13 @@ function lineStatus(l){
   switch(l.state){
     case "waiting": return {cls:"wait",txt:"Waiting for pickup",sub:"clock not started"};
     case "riding": { const op=(orderOf(l)||{}).p||{}, mm=Math.floor(el/MIN);
-      if(op.halfUpTo!=null&&mm<=+op.halfUpTo) return mm<=+op.graceMin?{cls:"",txt:`Free return · ${+op.graceMin-mm}m left`,sub:`then ½ h until ${op.halfUpTo} min`}:{cls:"",txt:`½ h if back within ${+op.halfUpTo-mm}m`,sub:`then full ${P===1?"1st hour":P+" paid hours"}`}; }
+      if(op.halfUpTo!=null&&mm<=+op.halfUpTo) return mm<=+op.graceMin?{cls:"",txt:`Free return · ${+op.graceMin-mm}m left`,sub:`then ½ h until ${op.halfUpTo} min`}:{cls:"",txt:`½ h if back within ${+op.halfUpTo-mm}m`,sub:`then full ${P===1?"1st hour":P+" paid hours"}`};
+      if(op.overFree!=null){ const of=+op.overFree, oh=+op.overHalf, H=fmtH(chargeH(orderOf(l),l,el));
+        if(mm<P*60) return {cls:"",txt:`${hm(left)} left in ${P===1?"1st hour":P+" paid hours"}`,sub:`then ${of} min free`};
+        const r=mm%60;
+        if(r<=of) return {cls:mm<P*60+60?"soon":"over",txt:`Free minutes · ${of-r}m left`,sub:`${H} chargeable · then +½ h`};
+        if(r<=oh) return {cls:"over",txt:`+½ h · full hour in ${oh-r}m`,sub:`${H} chargeable`};
+        return {cls:"over",txt:`${H} chargeable`,sub:`next free minutes at ${Math.floor(mm/60)+1}:00`}; } }
       return left>0?{cls:"",txt:`${hm(left)} left in ${P===1?"1st hour":P+" paid hours"}`,sub:`+${g} min grace after`}
       : gl>0?{cls:"soon",txt:`In grace · ${hm(gl)} left`,sub:`still ${P} hour${P>1?"s":""}`}
       : {cls:"over",txt:`Past grace by ${hm(-gl)}`,sub:`now ${fmtH(chargeH(orderOf(l),l,el))} chargeable`};
@@ -1268,7 +1281,8 @@ function receiptHTML(o,inv){
     <div class="rc-rule"></div><div class="rc-kv tot"><span>${cr?"Refunded":"Total"} KWD</span><span>${f(Math.abs(inv.amount))}</span></div>
     ${inv.pays.length?"":`<div class="rc-kv"><span>Paid</span><span>No charge</span></div>`}${inv.pays.map(p=>`<div class="rc-kv"><span>${cr?"Paid out":"Paid"} · ${esc(p.m)}</span><span>${f(Math.abs(p.amt))}</span></div>${p.change?`<div class="rc-kv"><span>Cash given</span><span>${f(p.amt+p.change)}</span></div><div class="rc-kv"><span>Change</span><span>${f(p.change)}</span></div>`:""}`).join("")}
     ${(!cr&&/Advance/.test(inv.kind))?vouchersOf(o).map(v=>`<div class="rc-rule"></div><div class="rc-v">FREE COFFEE VOUCHER<br><small>قهوة مجانية من المقهى</small><br><span style="font-size:16px;letter-spacing:2px">${v.code}</span><br>1 coffee · ${o.id}${v.bike?` · bike ${v.bike}`:""}<br><small>Valid today at the café next door. One coffee, one use only.</small></div>`).join(""):""}
-    <div class="rc-rule"></div><div class="rc-f">${cr?"Refund given in cash.":`${o.p.halfUpTo!=null?`Back within ${o.p.graceMin} min: full refund. Within ${o.p.halfUpTo} min: half hour charged. `:""}Paid hours include ${graceOf(o)} min return grace. After that, every started hour is charged.`}<br>Served by ${esc((inv.by||"").split("@")[0]||C.cashier)} · شكراً لزيارتكم</div></div>`;
+    <div class="rc-rule"></div><div class="rc-f">${cr?"Refund given in cash.":(o.p.overFree!=null?`Back within ${o.p.graceMin} min: full refund. Within ${o.p.halfUpTo} min: half hour. After each hour: ${o.p.overFree} min free, up to ${o.p.overHalf} min half hour, then a full hour.`
+      :`${o.p.halfUpTo!=null?`Back within ${o.p.graceMin} min: full refund. Within ${o.p.halfUpTo} min: half hour charged. `:""}Paid hours include ${graceOf(o)} min return grace. After that, every started hour is charged.`)}<br>Served by ${esc((inv.by||"").split("@")[0]||C.cashier)} · شكراً لزيارتكم</div></div>`;
 }
 function invoiceHTML(o,inv){
   const cr=inv.amount<0, paid=r3(inv.pays.reduce((a,p)=>a+p.amt,0)), C=SET.company;
@@ -1537,7 +1551,8 @@ function renderSettings(){
     <label>Café coffee transfer price KWD<input data-o="coffeePrice" type="number" step="0.001" value="${O.coffeePrice}"></label>
     <label>Free return / cancel window (minutes after pickup)<input data-o="graceMin" type="number" value="${O.graceMin}"></label>
     <label>Half-hour charge if back within (minutes after pickup)<input data-o="halfUpTo" type="number" value="${O.halfUpTo??40}"></label>
-    <label>Return grace after the paid hours (minutes)<input data-o="returnGrace" type="number" value="${O.returnGrace??30}"></label></div>
+    <label>Free minutes after each hour<input data-o="overFree" type="number" value="${O.overFree??10}"></label>
+    <label>Half-hour charge up to (minutes after each hour)<input data-o="overHalf" type="number" value="${O.overHalf??30}"></label></div>
     <p class="lnote">Return grace: up to 1 hour + grace is charged as 1 hour. Past it, every started hour counts (e.g. 30 min grace: 1:30 = 1 h, 1:31 = 2 h, 2:10 = 3 h).</p>
     <p class="lnote">Changes apply to new orders only; confirmed orders keep the prices they were sold at.</p></div>
   <div class="spanel"><h3>Receipt and company</h3><div class="sgrid">
