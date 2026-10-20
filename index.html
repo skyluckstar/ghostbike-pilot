@@ -431,7 +431,7 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
       <div class="sub"><span>Before offer</span><span class="num" id="gross">0.000</span></div>
       <div class="sub"><span>Offer savings</span><span class="num" id="save">0.000</span></div>
       <div class="tot"><span>Pay now (KWD)</span><span class="big num" id="total">0.000</span></div>
-      <div class="lnote">Pay now covers the hours chosen above, per bike. Back within 10 min: full refund; within 40 min: half an hour is charged and the rest refunded. After each hour: 10 min free, up to 30 min = half an hour, then a full hour. The clock starts at pickup. Extra hours are paid at the front after return; unused paid hours are refunded in cash.</div>
+      <div class="lnote">Pay now covers the hours chosen above, per bike. Back within 10 min: full refund; within 40 min: half an hour is charged and the rest refunded. After each hour: 10 min free, up to 35 min = half an hour, then a full hour. The clock starts at pickup. Extra hours are paid at the front after return; unused paid hours are refunded in cash.</div>
     </div>
     <div class="payzone">
       <h2>Payment <span class="ar">الدفع</span></h2>
@@ -535,7 +535,7 @@ const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturda
 /* ---------- defaults (from the live Odoo product list and pricelists, 30 Sep 2026) ---------- */
 const DEFAULT_SETTINGS={
   company:{name:"Ghost Bike",ar:"جوست بايك",line:"Bicycle rental · Kuwait",phone:"50825528",cashier:"Counter 1"},
-  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:40,returnGrace:30,overFree:10,overHalf:30},
+  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:40,returnGrace:30,overFree:10,overHalf:35},
   methods:["KNET","Cash","Card","Pay link"],
   accounts:{journal:"",revenue:"","KNET":"","Cash":"","Card":"","Pay link":""},
   countryCode:"965", testDay:"", backupHours:12
@@ -1552,7 +1552,7 @@ function renderSettings(){
     <label>Free return / cancel window (minutes after pickup)<input data-o="graceMin" type="number" value="${O.graceMin}"></label>
     <label>Half-hour charge if back within (minutes after pickup)<input data-o="halfUpTo" type="number" value="${O.halfUpTo??40}"></label>
     <label>Free minutes after each hour<input data-o="overFree" type="number" value="${O.overFree??10}"></label>
-    <label>Half-hour charge up to (minutes after each hour)<input data-o="overHalf" type="number" value="${O.overHalf??30}"></label></div>
+    <label>Half-hour charge up to (minutes after each hour)<input data-o="overHalf" type="number" value="${O.overHalf??35}"></label></div>
     <p class="lnote">Return grace: up to 1 hour + grace is charged as 1 hour. Past it, every started hour counts (e.g. 30 min grace: 1:30 = 1 h, 1:31 = 2 h, 2:10 = 3 h).</p>
     <p class="lnote">Changes apply to new orders only; confirmed orders keep the prices they were sold at.</p></div>
   <div class="spanel"><h3>Receipt and company</h3><div class="sgrid">
