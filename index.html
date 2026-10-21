@@ -437,7 +437,7 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
       <div class="sub"><span>Before offer</span><span class="num" id="gross">0.000</span></div>
       <div class="sub"><span>Offer savings</span><span class="num" id="save">0.000</span></div>
       <div class="tot"><span>Pay now (KWD)</span><span class="big num" id="total">0.000</span></div>
-      <div class="lnote">Pay now covers the hours chosen above, per bike. Back within 10 min: full refund; within 40 min: half an hour is charged and the rest refunded. After each hour: 10 min free, up to 35 min = half an hour, then a full hour. The clock starts at pickup. Extra hours are paid at the front after return; unused paid hours are refunded in cash.</div>
+      <div class="lnote">Pay now covers the hours chosen above, per bike. <span id="ruleNote">Back within 10 min: full refund; within 35 min: half an hour is charged and the rest refunded. After each hour: 10 min free, up to 35 min = half an hour, then a full hour.</span> The clock starts at pickup. Extra hours are paid at the front after return; unused paid hours are refunded in cash.</div>
     </div>
     <div class="payzone">
       <h2>Payment <span class="ar">الدفع</span></h2>
@@ -505,7 +505,7 @@ const hm=ms=>{const m=Math.max(0,Math.floor(ms/MIN));return `${Math.floor(m/60)}
 // Past the grace, every started hour counts: 1:31 = 2 h, 2:10 = 3 h.
 const chg=(ms,grace=30,paidH=1)=>{ const m=Math.max(0,Math.floor(ms/MIN)); let H=m<=60+grace?1:Math.ceil(m/60); if(paidH>1&&m<=paidH*60+grace) H=Math.min(H,paidH); return H; };
 const paidOf=l=>Math.max(1,+(l&&l.paidH)||1);
-// Short first ride: back within the free window (10 min) = nothing charged; within the half-hour band (40 min) = half an hour.
+// Short first ride: back within the free window (10 min) = nothing charged; within the half-hour band (35 min) = half an hour.
 // Orders confirmed before this rule existed (no halfUpTo saved) keep the old calculation.
 // Rule from v24 (orders saved with overFree): short first ride as before; then at the end of every hour
 // the first overFree minutes (10) are free, up to overHalf minutes (30) count half an hour, after that a full hour.
@@ -541,7 +541,7 @@ const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturda
 /* ---------- defaults (from the live Odoo product list and pricelists, 30 Sep 2026) ---------- */
 const DEFAULT_SETTINGS={
   company:{name:"Ghost Bike",ar:"جوست بايك",line:"Bicycle rental · Kuwait",phone:"50825528",cashier:"Counter 1"},
-  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:40,returnGrace:30,overFree:10,overHalf:35,nbkOn:true,snOn:true,lyOn:true,sunOn:true,monOn:true,wedOn:true},
+  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:35,returnGrace:30,overFree:10,overHalf:35,nbkOn:true,snOn:true,lyOn:true,sunOn:true,monOn:true,wedOn:true},
   customOffers:[],
   methods:["KNET","Cash","Card","Pay link"],
   accounts:{journal:"",revenue:"","KNET":"","Cash":"","Card":"","Pay link":""},
@@ -882,6 +882,7 @@ function renderNew(){
   if(S.ly&&!S.lyCodes.length&&S.sel.length===1) S.lyCodes=[S.sel[0]];
   const O_=SET.offers; if(O_.snOn===false) S.sn=false; if(O_.lyOn===false) S.ly=false; if(O_.nbkOn===false) S.nbk=false;
   $("tSN").hidden=O_.snOn===false; $("tLY").hidden=O_.lyOn===false; $("tNBK").hidden=O_.nbkOn===false;
+  $("ruleNote").textContent=`Back within ${O_.graceMin} min: full refund; within ${O_.halfUpTo} min: half an hour is charged and the rest refunded. After each hour: ${O_.overFree} min free, up to ${O_.overHalf} min = half an hour, then a full hour.`;
   const ACO=activeCO(); S.co=(S.co||[]).filter(id=>ACO.some(c=>c.id===id));
   $("coBox").innerHTML=ACO.map(c=>{ const ps=BIKES.filter(b=>c.prices[b.id]!=null&&c.prices[b.id]!=="").map(b=>`${esc(b.name)} ${f(+c.prices[b.id])}`);
     return `<button class="toggle" data-co="${esc(c.id)}" aria-pressed="${S.co.includes(c.id)}"><span>${esc(c.name)}${c.ar?` <span class="ar">${esc(c.ar)}</span>`:""}<small>${ps.slice(0,3).join(" · ")}${ps.length>3?` · +${ps.length-3} more`:""}</small></span><span class="sw" aria-hidden="true"></span></button>`; }).join("");
@@ -920,7 +921,7 @@ function renderNew(){
     :`<div class="empty">No bike matches “${esc(S.q)}”.</div>`;
   // ticket
   const HR=S.hours=Math.max(1,Math.min(12,parseInt(S.hours)||1));
-  $("hrs").innerHTML=S.sel.length?`<div class="hl"><b>Hours paid now</b><small>${HR===1?"Standard · 1st hour":`${HR} hours per bike`} + ${SET.offers.overFree??10} min free</small></div>
+  $("hrs").innerHTML=S.sel.length?`<div class="hl"><b>Hours paid now</b><small>${HR===1?"Standard · 1st hour":`${HR} hours per bike`} + ${SET.offers.overFree} min free</small></div>
     <div class="hstep"><button data-hrs="${HR-1}" ${HR<=1?"disabled":""} aria-label="One hour less">−</button><output class="num">${HR} h</output><button data-hrs="${HR+1}" ${HR>=12?"disabled":""} aria-label="One more hour">+</button></div>`:"";
   const PC={}; lines.forEach(l=>PC[l.code]=priceFor(ctx,l,HR)); S.pc=PC;
   let G=0,N=0,html="";
@@ -1602,7 +1603,7 @@ function renderSettings(){
     <p class="lnote">Lowering a count retires the highest-numbered free bikes; bikes out or with history are never deleted. A prefix can't change once its codes were used on an order.</p></div>
   <div class="spanel"><h3>Rental time rules</h3><div class="sgrid">
     <label>Free return / cancel window (minutes after pickup)<input data-o="graceMin" type="number" value="${O.graceMin}"></label>
-    <label>Half-hour charge if back within (minutes after pickup)<input data-o="halfUpTo" type="number" value="${O.halfUpTo??40}"></label>
+    <label>Half-hour charge if back within (minutes after pickup)<input data-o="halfUpTo" type="number" value="${O.halfUpTo??35}"></label>
     <label>Free minutes after each hour<input data-o="overFree" type="number" value="${O.overFree??10}"></label>
     <label>Half-hour charge up to (minutes after each hour)<input data-o="overHalf" type="number" value="${O.overHalf??35}"></label></div>
     <p class="lnote">After each hour: the free minutes cost nothing, up to the half-hour limit is charged half an hour, after that a full hour (e.g. 10 / 35: 1:10 = 1 h, 1:35 = 1½ h, 1:36 = 2 h).</p>
