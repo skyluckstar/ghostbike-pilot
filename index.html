@@ -364,6 +364,11 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
 #userLbl{color:#fff;font-weight:600}
 .codewrap{display:inline-flex;align-items:center;gap:2px}
 .lyref{width:100%;margin:-2px 0 8px;padding:9px 10px;border:1px solid var(--line);border-radius:10px;font-size:14px;background:var(--card);color:var(--ink)}
+[hidden]{display:none!important}
+.stabs{display:flex;gap:6px;margin:0 0 14px}.stabs button{padding:9px 18px;border-radius:10px;border:1px solid var(--line);background:var(--chip);font-weight:700;font-size:15px}
+.stabs button[aria-selected="true"]{background:var(--ink);color:var(--card);border-color:var(--ink)}
+.onsw{display:flex!important;align-items:center;gap:6px;flex-direction:row!important;white-space:nowrap;font-weight:600}
+.cocard{border:1px solid var(--line)}
 .snchip{border:1px dashed var(--ink2);background:transparent;border-radius:6px;padding:2px 6px;font-size:12px;font-weight:800;color:var(--ink2)}
 .snchip[aria-pressed="true"]{background:var(--lane);color:var(--laneInk);border:1px solid var(--lane)}
 .pickall{margin-left:auto;border:0;border-radius:10px;padding:10px 14px;background:var(--go);color:#fff;font-weight:700}
@@ -407,6 +412,7 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
       <button class="toggle" id="tSN" aria-pressed="false"><span>Special needs<small>First hour free · tap <b>SN</b> on the rider's bike in the ticket</small></span><span class="sw" aria-hidden="true"></span></button>
       <button class="toggle" id="tLY" aria-pressed="false"><span>Loyalty member<small>First hour free · check the loyalty app · tap <b>★</b> on the member's bike in the ticket</small></span><span class="sw" aria-hidden="true"></span></button>
       <input id="lyRef" class="lyref" hidden autocomplete="off" placeholder="Loyalty app reference / member no. (optional)" aria-label="Loyalty reference">
+      <div id="coBox"></div>
       <button class="toggle" id="tNBK" aria-pressed="false"><span>NBK employee<small id="nbkLbl">Check staff ID</small></span><span class="sw" aria-hidden="true"></span></button>
     </div>
     <div>
@@ -535,7 +541,8 @@ const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturda
 /* ---------- defaults (from the live Odoo product list and pricelists, 30 Sep 2026) ---------- */
 const DEFAULT_SETTINGS={
   company:{name:"Ghost Bike",ar:"جوست بايك",line:"Bicycle rental · Kuwait",phone:"50825528",cashier:"Counter 1"},
-  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:40,returnGrace:30,overFree:10,overHalf:35},
+  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:40,returnGrace:30,overFree:10,overHalf:35,nbkOn:true,snOn:true,lyOn:true,sunOn:true,monOn:true,wedOn:true},
+  customOffers:[],
   methods:["KNET","Cash","Card","Pay link"],
   accounts:{journal:"",revenue:"","KNET":"","Cash":"","Card":"","Pay link":""},
   countryCode:"965", testDay:"", backupHours:12
@@ -761,16 +768,23 @@ function bikeIcon(key,cls="bi"){
 }
 const iconOfBike=(id,cls="bi sm")=>bikeIcon((bikeById(id)||{}).icon,cls);
 /* ================= pricing: priority Special Needs > Loyalty > NBK > Sunday men > Monday > Wednesday ladies > normal ================= */
-function lineKey(o,l){
-  if(l.sn) return "sn";
-  if(l.ly) return "ly";
-  if(o.nbk) return "nbk";
+// Built-in offers (each can be switched off in Settings → Offers; orders keep the switches they were sold with)
+function baseKey(o,l){ const p=o.p||{};
+  if(l.sn&&p.snOn!==false) return "sn";
+  if(l.ly&&p.lyOn!==false) return "ly";
+  if(o.nbk&&p.nbkOn!==false) return "nbk";
   const day=l.day!==undefined?l.day:o.dayOffer;            // per bike: the rider on this bike qualifies
-  if(o.dow===0&&day) return "sun";
-  if(o.dow===1&&l.mon) return "mon";
-  if(o.dow===3&&day&&l.wed) return "wed";
+  if(o.dow===0&&day&&p.sunOn!==false) return "sun";
+  if(o.dow===1&&l.mon&&p.monOn!==false) return "mon";
+  if(o.dow===3&&day&&l.wed&&p.wedOn!==false) return "wed";
   return "none";
 }
+function keyRate(o,l,k){ const p=o.p; return k==="nbk"?l.rate*(1-p.nbkPct/100):k==="sun"?l.rate*(1-p.sunPct/100):k==="mon"?+p.monPrice:k==="wed"?+p.wedPrice:l.rate; }
+// Client's own offers (Settings → Offers): a fixed price per hour on chosen bikes, selected by staff. The cheapest price wins; free first hour stays first.
+const coOf=(o,k)=>(o.co||[]).find(c=>"co:"+c.id===k);
+function lineKey(o,l){ const k=baseKey(o,l); if(k==="sn"||k==="ly") return k;
+  let best=null; (o.co||[]).forEach(c=>{ const pr=c.prices&&c.prices[l.bikeId]; if(pr==null||pr==="") return; if(!best||+pr<best.p) best={id:c.id,p:+pr}; });
+  return best&&best.p<keyRate(o,l,k)-1e-9?"co:"+best.id:k; }
 function priceFor(o,l,H){
   const p=o.p, k=lineKey(o,l);
   switch(k){
@@ -779,22 +793,25 @@ function priceFor(o,l,H){
     case "sun": return r3(l.rate*(1-p.sunPct/100)*H);
     case "mon": return r3(p.monPrice*H);
     case "wed": return r3(p.wedPrice*H);  // bundle with free coffee: may exceed the normal rate by design
-    default:    return r3(l.rate*H);
+    default:    { const c=coOf(o,k); return r3((c?+c.prices[l.bikeId]:l.rate)*H); }
   }
 }
 const OFFER_LABEL={sn:"Special needs",ly:"Loyalty member",nbk:"NBK employee",sun:"Sunday men's offer",mon:"Monday offer",wed:"Wednesday ladies offer",none:"Normal rate"};
-function offerDetail(k,p){return {sn:"First hour free on the rider's bike",ly:"First hour free on the member's bike",nbk:`${p.nbkPct}% off all bikes`,sun:`${p.sunPct}% off all bikes`,
+const offerName=(k,o)=>{ if(!k||!k.startsWith("co:")) return OFFER_LABEL[k]; const c=coOf(o||{},k)||(SET.customOffers||[]).find(x=>"co:"+x.id===k); return c?c.name:"Offer"; };
+function offerDetail(k,p){ if(k&&k.startsWith("co:")) return "Special price on selected bikes"; return {sn:"First hour free on the rider's bike",ly:"First hour free on the member's bike",nbk:`${p.nbkPct}% off all bikes`,sun:`${p.sunPct}% off all bikes`,
   mon:`${f(p.monPrice)} KWD/hour on selected bikes`,wed:`${f(p.wedPrice)} KWD/hour on selected bikes + free coffee`,none:"No offer applies"}[k];}
 // pseudo-order from the ticket on screen
-function ticketCtx(){return {nbk:S.nbk,dow:todayDow(),dayOffer:S.dayOffer,p:SET.offers};}
+const activeCO=()=>(SET.customOffers||[]).filter(c=>c.active);
+const chosenCO=()=>activeCO().filter(c=>(S.co||[]).includes(c.id)).map(c=>({id:c.id,name:c.name,ar:c.ar||"",prices:{...c.prices}}));
+function ticketCtx(){return {nbk:S.nbk,dow:todayDow(),dayOffer:S.dayOffer,p:SET.offers,co:chosenCO()};}
 // Sunday/Wednesday: a chip on each bike shows who gets the day offer. Tap it on a bike ridden by someone who doesn't qualify.
-const sunMulti=()=>todayDow()===0&&S.sel.length>1&&!S.dayOffer;   // Sunday group, customer not a man: tick each man's bike
-function dayChip(code,b){ const dow=todayDow(); if(!(dow===0||(dow===3&&b.wed))) return ""; if(!S.dayOffer&&!(dow===0&&sunMulti())) return "";
+const sunMulti=()=>todayDow()===0&&S.sel.length>1&&!S.dayOffer&&SET.offers.sunOn!==false;   // Sunday group, customer not a man: tick each man's bike
+function dayChip(code,b){ const dow=todayDow(); if(!(dow===0||(dow===3&&b.wed))) return ""; if((dow===0&&SET.offers.sunOn===false)||(dow===3&&SET.offers.wedOn===false)) return ""; if(!S.dayOffer&&!(dow===0&&sunMulti())) return "";
   const on=S.dayOffer?!(S.dayOff||[]).includes(code):(S.dayOn||[]).includes(code), sym=dow===0?"♂ Man":"♀ Lady";
   return `<button class="snchip daychip" data-daycode="${code}" aria-pressed="${on}" title="${dow===0?"Sunday men's":"Wednesday ladies"} offer on this bike">${sym}</button>`; }
 function ticketLine(code,i){const u=unit(code),b=bikeById(u.bikeId);return {code,bikeId:b.id,name:b.name,rate:b.rate,mon:b.mon,wed:b.wed,sn:S.sn&&(S.snCodes||[]).includes(code),ly:S.ly&&(S.lyCodes||[]).includes(code),day:S.dayOffer?!(S.dayOff||[]).includes(code):(sunMulti()&&(S.dayOn||[]).includes(code))};}
 /* ================= 1 · NEW RENTAL ================= */
-const S={hours:1,ly:false,lyCodes:[],lyRef:"",sel:[],snCodes:[],dayOff:[],dayOn:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,q:"",cat:"Popular",draftId:null,
+const S={co:[],hours:1,ly:false,lyCodes:[],lyRef:"",sel:[],snCodes:[],dayOff:[],dayOn:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,q:"",cat:"Popular",draftId:null,
   pay:{mode:"single",method:"KNET",lines:[],rider:{}},pc:{}};
 const custById=id=>CUSTOMERS.find(c=>c.id===id);
 const qualifies=(g,dow)=>(dow===0&&g==="Male")||(dow===3&&g==="Female");
@@ -854,7 +871,8 @@ function renderNew(){
   renderCustomer();
   // day offer toggle
   S.dayOn=(S.dayOn||[]).filter(c=>S.sel.includes(c));
-  const dd={0:["Sunday men's offer",`${SET.offers.sunPct}% off · on each bike, tap ♂ off if the rider isn't a man${!S.dayOffer&&S.sel.length>1?" · 2+ bikes: tap ♂ Man on each man's bike":""}`],3:["Wednesday ladies offer",`${f(SET.offers.wedPrice)} KWD/hour + free coffee · on each bike, tap ♀ off if the rider isn't a lady`]}[dow];
+  const dd0={0:["Sunday men's offer",`${SET.offers.sunPct}% off · on each bike, tap ♂ off if the rider isn't a man${!S.dayOffer&&S.sel.length>1?" · 2+ bikes: tap ♂ Man on each man's bike":""}`],3:["Wednesday ladies offer",`${f(SET.offers.wedPrice)} KWD/hour + free coffee · on each bike, tap ♀ off if the rider isn't a lady`]}[dow];
+  const dd=(dow===0&&SET.offers.sunOn===false)||(dow===3&&SET.offers.wedOn===false)?undefined:dd0;
   const g=(custById(S.custId)||{}).gender;
   $("dayOfferBox").innerHTML=dd?`<button class="toggle" id="tDay" aria-pressed="${S.dayOffer}"><span>${dd[0]}<small>${dd[1]}${g?` · customer is ${g}`:""}</small></span><span class="sw" aria-hidden="true"></span></button>`:"";
   if(!dd) S.dayOffer=false;
@@ -862,22 +880,28 @@ function renderNew(){
   if(S.sn&&!S.snCodes.length&&S.sel.length===1) S.snCodes=[S.sel[0]];          // one bike: it is the rider's bike
   S.lyCodes=(S.lyCodes||[]).filter(c=>S.sel.includes(c));
   if(S.ly&&!S.lyCodes.length&&S.sel.length===1) S.lyCodes=[S.sel[0]];
-  $("tLY").setAttribute("aria-pressed",S.ly); $("lyRef").hidden=!S.ly; if(document.activeElement!==$("lyRef")) $("lyRef").value=S.lyRef||"";
+  const O_=SET.offers; if(O_.snOn===false) S.sn=false; if(O_.lyOn===false) S.ly=false; if(O_.nbkOn===false) S.nbk=false;
+  $("tSN").hidden=O_.snOn===false; $("tLY").hidden=O_.lyOn===false; $("tNBK").hidden=O_.nbkOn===false;
+  const ACO=activeCO(); S.co=(S.co||[]).filter(id=>ACO.some(c=>c.id===id));
+  $("coBox").innerHTML=ACO.map(c=>{ const ps=BIKES.filter(b=>c.prices[b.id]!=null&&c.prices[b.id]!=="").map(b=>`${esc(b.name)} ${f(+c.prices[b.id])}`);
+    return `<button class="toggle" data-co="${esc(c.id)}" aria-pressed="${S.co.includes(c.id)}"><span>${esc(c.name)}${c.ar?` <span class="ar">${esc(c.ar)}</span>`:""}<small>${ps.slice(0,3).join(" · ")}${ps.length>3?` · +${ps.length-3} more`:""}</small></span><span class="sw" aria-hidden="true"></span></button>`; }).join("");
+  $("tLY").setAttribute("aria-pressed",S.ly); $("lyRef").hidden=!S.ly||O_.lyOn===false; if(document.activeElement!==$("lyRef")) $("lyRef").value=S.lyRef||"";
   $("tSN").setAttribute("aria-pressed",S.sn); $("tNBK").setAttribute("aria-pressed",S.nbk);
   $("nbkLbl").textContent=`${SET.offers.nbkPct}% off · check staff ID`;
   // headline offer
   const lines=S.sel.map(ticketLine);
   const keys=[...new Set(lines.map(l=>lineKey(ctx,l)))];
-  const fallback=S.sn?"sn":S.ly?"ly":S.nbk?"nbk":(dow===0&&S.dayOffer)?"sun":dow===1?"mon":(dow===3&&S.dayOffer)?"wed":"none";
-  const main=["sn","ly","nbk","sun","mon","wed"].find(k=>keys.includes(k))||(lines.length?"none":fallback);
+  const coKeys=keys.filter(k=>k.startsWith("co:")), ctxCO=ctx.co||[];
+  const fallback=S.sn?"sn":S.ly?"ly":ctxCO.length?"co:"+ctxCO[0].id:S.nbk?"nbk":(dow===0&&S.dayOffer)?"sun":dow===1?"mon":(dow===3&&S.dayOffer)?"wed":"none";
+  const main=["sn","ly",...coKeys,"nbk","sun","mon","wed"].find(k=>keys.includes(k))||(lines.length?"none":fallback);
   const box=$("offer"); box.className="offer"+(main==="none"?" none":"");
-  box.innerHTML=`${OFFER_LABEL[main]}<small>${offerDetail(main,SET.offers)}${keys.length>1?" · other bikes: "+keys.filter(k=>k!==main).map(k=>OFFER_LABEL[k]).join(", "):""}</small>`;
-  const rules=[["sn","Special needs",S.sn],["ly","Loyalty member",S.ly],["nbk","NBK employee",S.nbk],["sun","Sunday · men",dow===0&&(S.dayOffer||(S.dayOn||[]).length>0)],["mon","Monday · selected bikes",dow===1],["wed","Wednesday · ladies",dow===3&&S.dayOffer]];
+  box.innerHTML=`${esc(offerName(main,ctx))}<small>${offerDetail(main,SET.offers)}${keys.length>1?" · other bikes: "+keys.filter(k=>k!==main).map(k=>esc(offerName(k,ctx))).join(", "):""}</small>`;
+  const OO=SET.offers, rules=[OO.snOn!==false&&["sn","Special needs",S.sn],OO.lyOn!==false&&["ly","Loyalty member",S.ly],...ACO.map(c=>["co:"+c.id,c.name,(S.co||[]).includes(c.id)]),OO.nbkOn!==false&&["nbk","NBK employee",S.nbk],OO.sunOn!==false&&["sun","Sunday · men",dow===0&&(S.dayOffer||(S.dayOn||[]).length>0)],OO.monOn!==false&&["mon","Monday · selected bikes",dow===1],OO.wedOn!==false&&["wed","Wednesday · ladies",dow===3&&S.dayOffer]].filter(Boolean);
   const reasonOf=k=>{ if(!lines.length) return "available today";
     if((k==="sun"||k==="mon"||k==="wed")&&S.nbk) return "replaced by NBK";
     if(k==="mon"||k==="wed") return "not on these bikes";
     return "not on these bikes"; };
-  $("rules").innerHTML=rules.map(([k,l,ok])=>`<li class="${keys.includes(k)?"on":ok?"avail":""}"><span>${l}</span><span>${keys.includes(k)?"applied":ok?reasonOf(k):"—"}</span></li>`).join("");
+  $("rules").innerHTML=rules.map(([k,l,ok])=>`<li class="${keys.includes(k)?"on":ok?"avail":""}"><span>${esc(l)}</span><span>${keys.includes(k)?"applied":ok?reasonOf(k):"—"}</span></li>`).join("");
   // groups + tiles
   const groups=["Popular","All",...[...new Set(BIKES.filter(b=>b.active).map(b=>b.group).filter(Boolean))]];
   const q=S.q.trim().toLowerCase();
@@ -905,7 +929,7 @@ function renderNew(){
     const ks=[...new Set(lines.filter(l=>cs.includes(l.code)).map(l=>lineKey(ctx,l)))].filter(k=>k!=="none");
     html+=`<div class="line"><span class="lq"><span class="mini"><button data-b="${b.id}" data-d="-1" aria-label="Remove one ${esc(b.name)}">−</button><b class="num">${cs.length}</b><button data-b="${b.id}" data-d="1" ${cs.length>=freeCount(b.id)?"disabled":""} aria-label="Add one ${esc(b.name)}">+</button></span>${bikeIcon(b.icon,"bi sm")}${esc(b.name)}</span><span class="num">${f(net)}</span>
       <span class="codes">${cs.map(c=>`<span class="codewrap"><button class="code num" data-swap="${c}" title="Swap for another free ${esc(b.name)}">${c}</button>${dayChip(c,b)}${S.sn?`<button class="snchip" data-sncode="${c}" aria-pressed="${S.snCodes.includes(c)}" title="Special needs rider on this bike">SN</button>`:""}${S.ly?`<button class="snchip" data-lycode="${c}" aria-pressed="${S.lyCodes.includes(c)}" title="Loyalty member on this bike">★ Loyal</button>`:""}</span>`).join("")}</span>
-      <small>${HR===1?"1st hour":HR+" h"} × ${f(b.rate)}${ks.length?` · ${ks.map(k=>OFFER_LABEL[k]).join(", ")}`:""}</small></div>`;
+      <small>${HR===1?"1st hour":HR+" h"} × ${f(b.rate)}${ks.length?` · ${ks.map(k=>esc(offerName(k,ctx))).join(", ")}`:""}</small></div>`;
   });
   $("lines").innerHTML=html||`<div class="empty">Tap a bike or scan its code to start</div>`;
   $("gross").textContent=f(G); $("save").textContent=f(G-N); $("total").textContent=f(N);
@@ -985,7 +1009,7 @@ async function confirmOrder(){
   try{
   const c=custById(S.custId), dow=todayDow(), sel=[...S.sel], draftId=S.draftId;
   const o={id:"",created:NOW(),custId:c?c.id:null,who:c?c.name:"Walk-in",phone:c?c.phone:"",gender:c?c.gender:"",
-    dow,dayOffer:S.dayOffer,nbk:S.nbk,lyRef:S.ly?(S.lyRef||"").trim():"",p:{...SET.offers},lines:[],invoices:[],voucher:null,by:(CURUSER||{}).email||"",rev:1};
+    dow,dayOffer:S.dayOffer,nbk:S.nbk,co:chosenCO(),lyRef:S.ly?(S.lyRef||"").trim():"",p:{...SET.offers},lines:[],invoices:[],voucher:null,by:(CURUSER||{}).email||"",rev:1};
   const PH=S.hours||1; o.lines=sel.map((code,i)=>{const l={...ticketLine(code,i),state:"waiting",paidH:PH}; l.adv=priceFor(o,l,PH); return l;});
   const adv=r3(o.lines.reduce((a,l)=>a+l.adv,0));
   // One cloud transaction: check every bike is still free (another desk may have just taken it), reserve them, take the numbers.
@@ -1010,7 +1034,7 @@ async function confirmOrder(){
   const pays=S.pay.mode==="riders"?o.lines.filter(l=>l.adv>0.0005).map(l=>({m:S.pay.rider[l.code],amt:l.adv})):S.pay.lines.map(p=>({...p}));
   { const free=adv<0.0005, full=l=>r3(l.rate*PH), why=l=>l.sn?"Special needs":l.ly?"Loyalty":"Offer";
     newInvoice(numFmt("inv",nos.inv),o,free?"No charge · free ride":PH===1?"Advance · 1st hour":`Advance · ${PH} hours`,o.lines.map(l=>l.code),adv,free?[]:pays,
-      l=>({code:l.code,name:l.name,desc:(PH===1?(l.sn?"1st hour · Special needs (free)":l.ly?"1st hour · Loyalty (free)":"1st hour (advance)"):`${PH} hours paid in advance${l.sn?" · 1st hour free (special needs)":l.ly?" · 1st hour free (loyalty)":""}`)+(l.adv<0.0005?` · value ${f(full(l))}, ${why(l)} −${f(full(l))}`:""),amt:l.adv,...(l.voucher?{voucher:l.voucher}:{})})); }
+      l=>({code:l.code,name:l.name,desc:(PH===1?(l.sn?"1st hour · Special needs (free)":l.ly?"1st hour · Loyalty (free)":"1st hour (advance)"):`${PH} hours paid in advance${l.sn?" · 1st hour free (special needs)":l.ly?" · 1st hour free (loyalty)":""}`)+(lineKey(o,l).startsWith("co:")?` · ${offerName(lineKey(o,l),o)}`:"")+(l.adv<0.0005?` · value ${f(full(l))}, ${why(l)} −${f(full(l))}`:""),amt:l.adv,...(l.voucher?{voucher:l.voucher}:{})})); }
   ORDERS.unshift(o); BASE.orders[o.id]=undefined; CLOUD.write([{t:"set",col:"orders",id:o.id,data:clean(o)}]).catch(e=>toast("Cloud save failed: "+e.message));
   if(draftId){ DRAFTS=DRAFTS.filter(d=>d.id!==draftId); persist("drafts"); }
   const inv=o.invoices[0];
@@ -1023,8 +1047,8 @@ async function confirmOrder(){
 /* ---------- held tickets ---------- */
 function hasContent(){return S.sel.length||S.pay.lines.length||S.custId||S.walkin;}
 function curWho(){const c=custById(S.custId);return c?c.name:S.walkin?"Walk-in":(digits($("phone").value)||"New customer");}
-function snap(){return {hours:S.hours,ly:S.ly,lyCodes:[...(S.lyCodes||[])],lyRef:S.lyRef||"",sel:[...S.sel],custId:S.custId,walkin:S.walkin,sn:S.sn,snCodes:[...(S.snCodes||[])],dayOff:[...(S.dayOff||[])],dayOn:[...(S.dayOn||[])],nbk:S.nbk,dayOffer:S.dayOffer,pay:JSON.parse(JSON.stringify(S.pay)),phone:$("phone").value,who:curWho(),at:NOW()};}
-function resetTicket(){Object.assign(S,{hours:1,ly:false,lyCodes:[],lyRef:"",sel:[],snCodes:[],dayOff:[],dayOn:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,draftId:null,pay:{mode:S.pay.mode,method:SET.methods[0],lines:[],rider:{}}});$("phone").value="";}
+function snap(){return {co:[...(S.co||[])],hours:S.hours,ly:S.ly,lyCodes:[...(S.lyCodes||[])],lyRef:S.lyRef||"",sel:[...S.sel],custId:S.custId,walkin:S.walkin,sn:S.sn,snCodes:[...(S.snCodes||[])],dayOff:[...(S.dayOff||[])],dayOn:[...(S.dayOn||[])],nbk:S.nbk,dayOffer:S.dayOffer,pay:JSON.parse(JSON.stringify(S.pay)),phone:$("phone").value,who:curWho(),at:NOW()};}
+function resetTicket(){Object.assign(S,{co:[],hours:1,ly:false,lyCodes:[],lyRef:"",sel:[],snCodes:[],dayOff:[],dayOn:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,draftId:null,pay:{mode:S.pay.mode,method:SET.methods[0],lines:[],rider:{}}});$("phone").value="";}
 async function holdCurrent(forceNew){
   if(hasContent()){
     const id=S.draftId||numFmt("draft",(await allocNos({draft:1})).draft);
@@ -1041,7 +1065,7 @@ async function resumeDraft(id){
   const d=DRAFTS.find(x=>x.id===id); if(!d) return;
   DRAFTS=DRAFTS.filter(x=>x.id!==id);
   d.sel.forEach(c=>{const u=unit(c); if(u&&u.st==="draft"&&(u.draft===id||!u.draft)){ u.st="free"; u.draft=null; }});
-  Object.assign(S,{hours:d.hours||1,ly:!!d.ly,lyCodes:d.lyCodes||[],lyRef:d.lyRef||"",sel:d.sel.filter(c=>unit(c)&&unit(c).st==="free"),custId:d.custId,walkin:d.walkin,sn:d.sn,snCodes:d.snCodes||[],dayOff:d.dayOff||[],dayOn:d.dayOn||[],nbk:d.nbk,dayOffer:d.dayOffer,pay:d.pay,draftId:id});
+  Object.assign(S,{co:d.co||[],hours:d.hours||1,ly:!!d.ly,lyCodes:d.lyCodes||[],lyRef:d.lyRef||"",sel:d.sel.filter(c=>unit(c)&&unit(c).st==="free"),custId:d.custId,walkin:d.walkin,sn:d.sn,snCodes:d.snCodes||[],dayOff:d.dayOff||[],dayOn:d.dayOn||[],nbk:d.nbk,dayOffer:d.dayOffer,pay:d.pay,draftId:id});
   $("phone").value=d.phone||""; persist("drafts","units");
   showView("new"); refreshAll(); toast(`${id} resumed where you left off.`);
 }
@@ -1103,7 +1127,7 @@ function renderBoard(){
   $("outList").innerHTML=open.length?open.map(o=>{
     const riding=o.lines.filter(l=>l.state==="riding").length, waiting=o.lines.filter(l=>l.state==="waiting").length;
     const k=[...new Set(o.lines.map(l=>lineKey(o,l)))].filter(x=>x!=="none");
-    return `<div class="group"><div class="ghead"><b>${esc(o.who)}</b><span>${o.id}</span>${o.phone?`<span class="num">${fmtPhone(o.phone)}</span>`:""}${k.map(x=>`<span class="tag">${OFFER_LABEL[x]}</span>`).join("")}
+    return `<div class="group"><div class="ghead"><b>${esc(o.who)}</b><span>${o.id}</span>${o.phone?`<span class="num">${fmtPhone(o.phone)}</span>`:""}${k.map(x=>`<span class="tag">${esc(offerName(x,o))}</span>`).join("")}
       <span>${riding} riding${waiting?` · ${waiting} waiting`:""} · ${o.lines.length} bikes</span>${waiting>1?`<button class="pickall" data-pickall="${o.id}">Pick up all ${waiting}</button>`:""}</div>
       ${o.lines.map(l=>{ const s=lineStatus(l), el=l.pick?(l.ret||NOW())-l.pick:0;
         const btns=l.state==="waiting"?`<div class="racts"><button data-pickup="${l.code}">Confirm pickup</button><span><button class="ghost" data-cancel="${l.code}">Cancel</button></span></div>`
@@ -1384,6 +1408,12 @@ function dayData(D){
   const created=ORDERS.filter(o=>dayKey(o.created)===D);
   return {invs,rev,ref,pay,cashRef,created,bikes:created.reduce((a,o)=>a+o.lines.length,0),vouchers:created.flatMap(o=>vouchersOf(o))};
 }
+// Offers used on orders made that day: bikes and the discount compared with the normal price (Wednesday can be negative: bundle with coffee).
+function offersUsedHTML(D){ const g={};
+  ORDERS.filter(o=>dayKey(o.created)===D).forEach(o=>o.lines.forEach(l=>{ if(l.state==="cancelled"||l.state==="cancelPending") return; const k=lineKey(o,l); if(k==="none") return;
+    const H=l.H!=null?l.H:paidOf(l), name=offerName(k,o), e=g[name]=g[name]||{n:0,d:0}; e.n++; e.d=r3(e.d+l.rate*H-priceFor(o,l,H)); }));
+  const rows=Object.entries(g);
+  return `<div class="spanel"><h3>Offers used</h3><table class="rtbl"><tr><th>Offer</th><th class="r">Bikes</th><th class="r">Discount KWD</th></tr>${rows.length?rows.map(([k,v])=>`<tr><td>${esc(k)}</td><td class="r num">${v.n}</td><td class="r num">${f(v.d)}</td></tr>`).join(""):`<tr><td colspan="3" class="muted">None</td></tr>`}</table></div>`; }
 function renderReport(){
   const D=$("repDate").value||dayKey(NOW()); $("repDate").value=D;
   const x=dayData(D), L=DAYS_LOG[D]||{};
@@ -1397,6 +1427,7 @@ function renderReport(){
       <p>${x.created.length} orders · ${x.bikes} bikes · ${x.invs.length} documents · ${x.vouchers.length} coffee voucher${x.vouchers.length===1?"":"s"} issued${x.vouchers.length?` (${x.vouchers.map(v=>v.code).join(", ")})`:""}</p>
       ${D===dayKey(NOW())&&(openNow||toSettle||DRAFTS.length)?`<p class="warnmsg">Before closing: ${openNow} bike(s) still out or waiting · ${toSettle} to settle · ${DRAFTS.length} unfinished ticket(s).</p>`:""}
       <p><b>Net revenue:</b> <span class="num">${f(revT-refT)}</span> KWD (sales ${f(revT)} − refunds ${f(refT)})</p></div>
+    ${offersUsedHTML(D)}
     <div class="rgrid">${tbl("Revenue by bike type",x.rev)}${tbl("Refunds by bike type",x.ref,true)}${tbl("Received by payment method",x.pay)}</div>
     <div class="spanel"><h3>Cash drawer</h3><div class="sgrid">
       <label>Opening float<input class="num" id="cFloat" inputmode="decimal" value="${L.float??""}"></label>
@@ -1526,10 +1557,36 @@ async function readOldLocal(){
 async function migrateLocal(){ const d=await readOldLocal(); if(!d) return toast("No earlier pilot data on this PC."); await importData(d,"this PC's earlier pilot data"); }
 
 /* ================= SETTINGS ================= */
+let STAB="general";
+const onBox=(k,O)=>`<label class="onsw"><input type="checkbox" data-on="${k}" ${O[k]!==false?"checked":""}> Active</label>`;
+const coCard=c=>`<div class="spanel cocard" data-cof="${esc(c.id)}">
+    <div class="sgrid"><label>Offer name<input data-cf="name" value="${esc(c.name||"")}" placeholder="e.g. Summer kids deal"></label>
+      <label>Arabic name<input data-cf="ar" dir="rtl" value="${esc(c.ar||"")}"></label>
+      <label class="onsw" style="align-self:end"><input type="checkbox" data-cf="active" ${c.active?"checked":""}> Active (shown at the counter)</label></div>
+    <div style="overflow-x:auto"><table class="stbl"><tr><th>Bike type</th><th>Normal KWD/h</th><th>Offer KWD/h</th></tr>
+      ${BIKES.map(b=>`<tr><td>${esc(b.name)}${b.active?"":' <span class="muted">(inactive)</span>'}</td><td class="num">${f(b.rate)}</td><td><input class="n" data-cfp="${b.id}" inputmode="decimal" placeholder="—" value="${c.prices&&c.prices[b.id]!=null?c.prices[b.id]:""}"></td></tr>`).join("")}</table></div>
+    <div class="btnrow"><button class="btn warn" data-codel="${esc(c.id)}">Delete offer</button></div></div>`;
+function offersTabHTML(){ const O=SET.offers;
+  return `<div class="spanel"><h3>Built-in offers</h3>
+    <div style="overflow-x:auto"><table class="stbl"><tr><th>Offer</th><th>How it works</th><th>Setting</th><th></th></tr>
+      <tr><td>Special needs</td><td>First hour free on the rider's bike</td><td></td><td>${onBox("snOn",O)}</td></tr>
+      <tr><td>Loyalty member</td><td>First hour free on the member's bike</td><td></td><td>${onBox("lyOn",O)}</td></tr>
+      <tr><td>NBK employee</td><td>% off all bikes, all hours</td><td><label>Discount %<input data-o="nbkPct" type="number" value="${O.nbkPct}"></label></td><td>${onBox("nbkOn",O)}</td></tr>
+      <tr><td>Sunday · men</td><td>% off on men's bikes</td><td><label>Discount %<input data-o="sunPct" type="number" value="${O.sunPct}"></label></td><td>${onBox("sunOn",O)}</td></tr>
+      <tr><td>Monday</td><td>Fixed price on bikes ticked “Monday” (General tab)</td><td><label>KWD/h<input data-o="monPrice" type="number" step="0.001" value="${O.monPrice}"></label></td><td>${onBox("monOn",O)}</td></tr>
+      <tr><td>Wednesday · ladies</td><td>Fixed price + free coffee on bikes ticked “Wednesday”</td><td><label>KWD/h<input data-o="wedPrice" type="number" step="0.001" value="${O.wedPrice}"></label><label>Café coffee price KWD<input data-o="coffeePrice" type="number" step="0.001" value="${O.coffeePrice}"></label></td><td>${onBox("wedOn",O)}</td></tr>
+    </table></div>
+    <p class="lnote">Switching an offer off hides it at the counter. Orders already paid keep their prices.</p></div>
+  <div class="spanel"><h3>Your offers</h3>
+    <p class="lnote">Each offer is a special price per hour on the bikes you choose (leave a bike empty to exclude it). Active offers appear under Offers on New rental; staff tap them for the customers who qualify. If several prices fit a bike, the customer gets the cheapest. The price applies to every hour, including extra time.</p>
+    <div id="coList">${(SET.customOffers||[]).map(coCard).join("")||'<p class="muted" id="coEmpty">No offers yet.</p>'}</div>
+    <div class="btnrow"><button class="btn" data-coadd>+ Add offer</button><button class="btn pri" data-savesettings>Save all</button></div></div>`; }
 function renderSettings(){
   const O=SET.offers, C=SET.company, A=SET.accounts;
   const used=pre=>ORDERS.some(o=>o.lines.some(l=>l.code.startsWith(pre+"-")))||DRAFTS.some(d=>d.sel.some(c=>c.startsWith(pre+"-")));
   $("settingsBody").innerHTML=`
+  <div class="stabs" role="tablist"><button data-stab="general" role="tab" aria-selected="${STAB==="general"}">General</button><button data-stab="offers" role="tab" aria-selected="${STAB==="offers"}">Offers</button></div>
+  <div id="stGeneral" ${STAB==="general"?"":"hidden"}>
   ${SET.placeholderCounts?`<div class="banner" style="margin:0 0 14px"><span>Bike counts are placeholders (2 per type). Enter the real number of bikes per type below, then Save.</span></div>`:""}
   <div class="spanel"><h3>Bikes and codes</h3>
     <div style="overflow-x:auto"><table class="stbl"><tr><th>Bike type</th><th>Arabic name</th><th>Code prefix</th><th>No. of bikes</th><th>Rate KWD/h</th><th>Monday</th><th>Wednesday</th><th>Group</th><th>Icon</th><th>Popular</th><th>Active</th><th>Codes</th></tr>
@@ -1543,17 +1600,12 @@ function renderSettings(){
       <td class="muted" style="font-size:12px">${live.length?`${live[0]} … ${live[live.length-1]}`:"—"}</td></tr>`;}).join("")}</table></div>
     <div class="btnrow"><button class="btn" data-addbike>+ Add bike type</button><button class="btn pri" data-savesettings>Save all</button></div>
     <p class="lnote">Lowering a count retires the highest-numbered free bikes; bikes out or with history are never deleted. A prefix can't change once its codes were used on an order.</p></div>
-  <div class="spanel"><h3>Offers</h3><div class="sgrid">
-    <label>Sunday men's discount %<input data-o="sunPct" type="number" value="${O.sunPct}"></label>
-    <label>Monday price KWD/h<input data-o="monPrice" type="number" step="0.001" value="${O.monPrice}"></label>
-    <label>Wednesday ladies price KWD/h<input data-o="wedPrice" type="number" step="0.001" value="${O.wedPrice}"></label>
-    <label>NBK discount %<input data-o="nbkPct" type="number" value="${O.nbkPct}"></label>
-    <label>Café coffee transfer price KWD<input data-o="coffeePrice" type="number" step="0.001" value="${O.coffeePrice}"></label>
+  <div class="spanel"><h3>Rental time rules</h3><div class="sgrid">
     <label>Free return / cancel window (minutes after pickup)<input data-o="graceMin" type="number" value="${O.graceMin}"></label>
     <label>Half-hour charge if back within (minutes after pickup)<input data-o="halfUpTo" type="number" value="${O.halfUpTo??40}"></label>
     <label>Free minutes after each hour<input data-o="overFree" type="number" value="${O.overFree??10}"></label>
     <label>Half-hour charge up to (minutes after each hour)<input data-o="overHalf" type="number" value="${O.overHalf??35}"></label></div>
-    <p class="lnote">Return grace: up to 1 hour + grace is charged as 1 hour. Past it, every started hour counts (e.g. 30 min grace: 1:30 = 1 h, 1:31 = 2 h, 2:10 = 3 h).</p>
+    <p class="lnote">After each hour: the free minutes cost nothing, up to the half-hour limit is charged half an hour, after that a full hour (e.g. 10 / 35: 1:10 = 1 h, 1:35 = 1½ h, 1:36 = 2 h).</p>
     <p class="lnote">Changes apply to new orders only; confirmed orders keep the prices they were sold at.</p></div>
   <div class="spanel"><h3>Receipt and company</h3><div class="sgrid">
     <label>Name<input data-c="name" value="${esc(C.name)}"></label><label>Arabic name<input data-c="ar" value="${esc(C.ar)}" dir="rtl"></label>
@@ -1571,6 +1623,8 @@ function renderSettings(){
       <label>Test mode: simulate weekday<select data-s="testDay"><option value="">Off (real date)</option>${DAYS.map((d,i)=>`<option value="${i}" ${String(SET.testDay)===String(i)?"selected":""}>${d}</option>`).join("")}</select></label></div>
     <div class="btnrow"><button class="btn dark" data-folder>Choose backup folder</button><button class="btn" data-backup>Backup now</button><button class="btn warn" data-restore>Load a backup into the cloud…</button>${META.oldLocal?`<button class="btn dark" data-migrate>Move this PC&#39;s earlier data to the cloud (${META.oldLocal} orders)</button>`:""}</div>
     <p class="lnote">Never use “Clear browsing data” in this browser profile: it deletes the app's data. Choose a OneDrive or Google Drive folder so every backup is also copied off this PC.</p></div>
+  </div>
+  <div id="stOffers" ${STAB==="offers"?"":"hidden"}>${offersTabHTML()}</div>
   <div class="spanel"><h3>Start fresh</h3>
     <p>Erases all orders, invoices, receipts, held tickets, day reports and customers, restarts the numbers at T-00001 / PINV-0001, and sets every bike back to free. Settings, prices, offers, bikes and logins are kept.</p>
     <p class="lnote">A full backup file is saved first. Close the app on every other desk before you start.</p>
@@ -1592,6 +1646,13 @@ function collectChanges(){
     if(Object.keys(ch).length) bc[id]=ch; });
   const num=el=>parseFloat(el.value)||0;
   document.querySelectorAll("[data-o]").forEach(i=>{ if(changed(i)) sc.push([["offers",i.dataset.o],num(i)]); });
+  document.querySelectorAll("[data-on]").forEach(i=>{ if(changed(i)) sc.push([["offers",i.dataset.on],i.checked]); });
+  if($("coList")){ const list=[...document.querySelectorAll("[data-cof]")].map(card=>{ const g=k=>card.querySelector(`[data-cf="${k}"]`); const prices={};
+      card.querySelectorAll("[data-cfp]").forEach(i=>{ const v=String(i.value).trim(); if(v==="") return; const n=parseAmt(v); if(!(n>=0)) err=`Offer “${g("name").value.trim()||"new offer"}”: check the price for ${(bikeById(i.dataset.cfp)||{}).name}.`; else prices[i.dataset.cfp]=r3(n); });
+      const o={id:card.dataset.cof,name:g("name").value.trim(),ar:g("ar").value.trim(),active:g("active").checked,prices};
+      if(!o.name) err="Every offer needs a name."; else if(o.active&&!Object.keys(prices).length) err=`Offer “${o.name}”: enter a price for at least one bike, or switch it off.`;
+      return o; });
+    if(JSON.stringify(list)!==JSON.stringify(clean(SET.customOffers||[]))) sc.push([["customOffers"],list]); }
   document.querySelectorAll("[data-c]").forEach(i=>{ if(changed(i)) sc.push([["company",i.dataset.c],i.value.trim()]); });
   document.querySelectorAll("[data-a]").forEach(i=>{ if(changed(i)) sc.push([["accounts",i.dataset.a],i.value.trim()]); });
   if(changed($("sMethods"))){ const ms=$("sMethods").value.split(",").map(x=>x.trim()).filter(Boolean); if(ms.length) sc.push([["methods"],ms]); }
@@ -1706,6 +1767,7 @@ document.addEventListener("click",e=>{
   if(x=c("[data-lycode]")){ const k=x.dataset.lycode; S.lyCodes=S.lyCodes.includes(k)?S.lyCodes.filter(v=>v!==k):[...S.lyCodes,k]; return render(); }
   if(x=c("[data-sncode]")){ const k=x.dataset.sncode; S.snCodes=S.snCodes.includes(k)?S.snCodes.filter(v=>v!==k):[...S.snCodes,k]; return render(); }
   if(c("#tNBK")){ S.nbk=!S.nbk; return render(); }
+  if(x=c("[data-co]")){ const id=x.dataset.co; S.co=(S.co||[]).includes(id)?S.co.filter(v=>v!==id):[...(S.co||[]),id]; return render(); }
   if(x=c("[data-pm]")){ S.pay.method=x.dataset.pm; return addPayment(); }
   if(x=c("[data-pmode]")){ S.pay.mode=x.dataset.pmode; return render(); }
   if(c("[data-addpay]")) return addPayment();
@@ -1760,6 +1822,10 @@ document.addEventListener("click",e=>{
   if(c("[data-lockmgr]")){ lockManager("Manager screens locked."); return; }
   if(c("[data-signout]")){ if(confirm("Sign out of this desk?")){ lockManager(); CLOUD.signOut().then(()=>location.reload()); } return; }
   if(c("[data-addbike]")) return addBike();
+  if(x=c("[data-stab]")){ STAB=x.dataset.stab; document.querySelectorAll("[data-stab]").forEach(b=>b.setAttribute("aria-selected",b===x)); $("stGeneral").hidden=STAB!=="general"; $("stOffers").hidden=STAB!=="offers"; return; }
+  if(c("[data-coadd]")){ const e=$("coEmpty"); if(e) e.remove(); const id="o"+Date.now().toString(36); $("coList").insertAdjacentHTML("beforeend",coCard({id,name:"",ar:"",active:true,prices:{}}));
+    SETDIRTY=true; const card=document.querySelector(`[data-cof="${id}"]`); card.querySelector('[data-cf="name"]').focus(); return; }
+  if(x=c("[data-codel]")){ const card=document.querySelector(`[data-cof="${x.dataset.codel}"]`); if(card&&confirm("Delete this offer? Orders already paid keep their prices.")){ card.remove(); SETDIRTY=true; toast("Press Save all to delete it for every desk."); } return; }
     if(c("[data-savesettings]")) return saveSettings();
   if(x=c("[data-act]")){ const a=x.dataset.act; ({close:()=>$("dlg").close(),doreturn:doReturn,doswap:doSwap,docancel:doCancel,dosettle:doSettle,dorefund:doRefund}[a]||(()=>{}))(); }
 });
