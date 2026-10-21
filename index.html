@@ -513,7 +513,8 @@ function hoursRule(p,m){ const g=+p.graceMin, h=+p.halfUpTo, of=+p.overFree, oh=
   if(m<=g) return 0; if(m<=h) return 0.5; if(m<=60) return 1;
   const k=Math.floor(m/60), r=m-60*k; return r<=of?k:r<=oh?k+0.5:k+1; }
 function chargeH(o,l,ms){ const p=(o&&o.p)||{}, m=Math.max(0,Math.floor(ms/MIN));
-  if(p.overFree!=null) return hoursRule(p,m);
+  if(p.overFree!=null){ const H=hoursRule(p,m), P=paidOf(l);
+    return p.noEarlyRefund&&P>1&&m>+p.graceMin?Math.max(H,P):H; }   // bookings of 2+ hours: booked hours kept after the free window
   if(p.halfUpTo!=null){ if(m<=+p.graceMin) return 0; if(m<=+p.halfUpTo) return 0.5; }
   return chg(ms,graceOf(o),paidOf(l)); }
 const fmtH=h=>{ const w=Math.floor(h), hf=h%1>0.001; return (w||!hf?w:"")+(hf?"½":"")+" h"; };
@@ -541,7 +542,7 @@ const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturda
 /* ---------- defaults (from the live Odoo product list and pricelists, 30 Sep 2026) ---------- */
 const DEFAULT_SETTINGS={
   company:{name:"Ghost Bike",ar:"جوست بايك",line:"Bicycle rental · Kuwait",phone:"50825528",cashier:"Counter 1"},
-  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:35,returnGrace:30,overFree:10,overHalf:35,nbkOn:true,snOn:true,lyOn:true,sunOn:true,monOn:true,wedOn:true},
+  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:35,returnGrace:30,overFree:10,overHalf:35,noEarlyRefund:true,nbkOn:true,snOn:true,lyOn:true,sunOn:true,monOn:true,wedOn:true},
   customOffers:[],
   methods:["KNET","Cash","Card","Pay link"],
   accounts:{journal:"",revenue:"","KNET":"","Cash":"","Card":"","Pay link":""},
@@ -677,7 +678,7 @@ const flush=async()=>{ await Promise.all(Object.values(orderChains)); };
 /* ---------- live updates from other desks ---------- */
 let refreshTimer=null, refreshWanted=false;
 function scheduleRefresh(){ clearTimeout(refreshTimer); refreshTimer=setTimeout(()=>{
-  const a=document.activeElement, STATIC=["lyRef","phone","bq","pscan","dq","oq","repDate","rFrom","rTo"];
+  const a=document.activeElement, STATIC=["ofFrom","ofTo","ofSel","lyRef","phone","bq","pscan","dq","oq","repDate","rFrom","rTo"];
   if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&!STATIC.includes(a.id)&&!$("dlg").contains(a)){ refreshWanted=true; return; }   // never wipe what someone is typing
   if(typeof refreshAll==="function"&&SET&&BIKES) refreshAll(); },60); }
 document.addEventListener("focusout",()=>{ if(refreshWanted){ refreshWanted=false; scheduleRefresh(); } });
@@ -882,7 +883,7 @@ function renderNew(){
   if(S.ly&&!S.lyCodes.length&&S.sel.length===1) S.lyCodes=[S.sel[0]];
   const O_=SET.offers; if(O_.snOn===false) S.sn=false; if(O_.lyOn===false) S.ly=false; if(O_.nbkOn===false) S.nbk=false;
   $("tSN").hidden=O_.snOn===false; $("tLY").hidden=O_.lyOn===false; $("tNBK").hidden=O_.nbkOn===false;
-  $("ruleNote").textContent=`Back within ${O_.graceMin} min: full refund; within ${O_.halfUpTo} min: half an hour is charged and the rest refunded. After each hour: ${O_.overFree} min free, up to ${O_.overHalf} min = half an hour, then a full hour.`;
+  $("ruleNote").textContent=`Back within ${O_.graceMin} min: full refund; within ${O_.halfUpTo} min: half an hour is charged and the rest refunded. After each hour: ${O_.overFree} min free, up to ${O_.overHalf} min = half an hour, then a full hour.${O_.noEarlyRefund?` Bookings of 2 hours or more: no refund after ${O_.graceMin} min.`:""}`;
   const ACO=activeCO(); S.co=(S.co||[]).filter(id=>ACO.some(c=>c.id===id));
   $("coBox").innerHTML=ACO.map(c=>{ const ps=BIKES.filter(b=>c.prices[b.id]!=null&&c.prices[b.id]!=="").map(b=>`${esc(b.name)} ${f(+c.prices[b.id])}`);
     return `<button class="toggle" data-co="${esc(c.id)}" aria-pressed="${S.co.includes(c.id)}"><span>${esc(c.name)}${c.ar?` <span class="ar">${esc(c.ar)}</span>`:""}<small>${ps.slice(0,3).join(" · ")}${ps.length>3?` · +${ps.length-3} more`:""}</small></span><span class="sw" aria-hidden="true"></span></button>`; }).join("");
@@ -1103,7 +1104,8 @@ function lineStatus(l){
   switch(l.state){
     case "waiting": return {cls:"wait",txt:"Waiting for pickup",sub:"clock not started"};
     case "riding": { const op=(orderOf(l)||{}).p||{}, mm=Math.floor(el/MIN);
-      if(op.halfUpTo!=null&&mm<=+op.halfUpTo) return mm<=+op.graceMin?{cls:"",txt:`Free return · ${+op.graceMin-mm}m left`,sub:`then ½ h until ${op.halfUpTo} min`}:{cls:"",txt:`½ h if back within ${+op.halfUpTo-mm}m`,sub:`then full ${P===1?"1st hour":P+" paid hours"}`};
+      if(op.noEarlyRefund&&P>1&&mm<=+op.graceMin) return {cls:"",txt:`Free return · ${+op.graceMin-mm}m left`,sub:`then the ${P} booked hours are kept`};
+      if(op.halfUpTo!=null&&mm<=+op.halfUpTo&&!(op.noEarlyRefund&&P>1)) return mm<=+op.graceMin?{cls:"",txt:`Free return · ${+op.graceMin-mm}m left`,sub:`then ½ h until ${op.halfUpTo} min`}:{cls:"",txt:`½ h if back within ${+op.halfUpTo-mm}m`,sub:`then full ${P===1?"1st hour":P+" paid hours"}`};
       if(op.overFree!=null){ const of=+op.overFree, oh=+op.overHalf, H=fmtH(chargeH(orderOf(l),l,el));
         if(mm<P*60) return {cls:"",txt:`${hm(left)} left in ${P===1?"1st hour":P+" paid hours"}`,sub:`then ${of} min free`};
         const r=mm%60;
@@ -1306,7 +1308,7 @@ function receiptHTML(o,inv){
     <div class="rc-rule"></div><div class="rc-kv tot"><span>${cr?"Refunded":"Total"} KWD</span><span>${f(Math.abs(inv.amount))}</span></div>
     ${inv.pays.length?"":`<div class="rc-kv"><span>Paid</span><span>No charge</span></div>`}${inv.pays.map(p=>`<div class="rc-kv"><span>${cr?"Paid out":"Paid"} · ${esc(p.m)}</span><span>${f(Math.abs(p.amt))}</span></div>${p.change?`<div class="rc-kv"><span>Cash given</span><span>${f(p.amt+p.change)}</span></div><div class="rc-kv"><span>Change</span><span>${f(p.change)}</span></div>`:""}`).join("")}
     ${(!cr&&/Advance/.test(inv.kind))?vouchersOf(o).map(v=>`<div class="rc-rule"></div><div class="rc-v">FREE COFFEE VOUCHER<br><small>قهوة مجانية من المقهى</small><br><span style="font-size:16px;letter-spacing:2px">${v.code}</span><br>1 coffee · ${o.id}${v.bike?` · bike ${v.bike}`:""}<br><small>Valid today at the café next door. One coffee, one use only.</small></div>`).join(""):""}
-    <div class="rc-rule"></div><div class="rc-f">${cr?"Refund given in cash.":(o.p.overFree!=null?`Back within ${o.p.graceMin} min: full refund. Within ${o.p.halfUpTo} min: half hour. After each hour: ${o.p.overFree} min free, up to ${o.p.overHalf} min half hour, then a full hour.`
+    <div class="rc-rule"></div><div class="rc-f">${cr?"Refund given in cash.":(o.p.overFree!=null?`Back within ${o.p.graceMin} min: full refund. Within ${o.p.halfUpTo} min: half hour. After each hour: ${o.p.overFree} min free, up to ${o.p.overHalf} min half hour, then a full hour.${o.p.noEarlyRefund&&o.lines.some(l=>paidOf(l)>1)?` Booked hours are not refunded after ${o.p.graceMin} min.`:""}`
       :`${o.p.halfUpTo!=null?`Back within ${o.p.graceMin} min: full refund. Within ${o.p.halfUpTo} min: half hour charged. `:""}Paid hours include ${graceOf(o)} min return grace. After that, every started hour is charged.`)}<br>Served by ${esc((inv.by||"").split("@")[0]||C.cashier)} · شكراً لزيارتكم</div></div>`;
 }
 function invoiceHTML(o,inv){
@@ -1409,14 +1411,37 @@ function dayData(D){
   const created=ORDERS.filter(o=>dayKey(o.created)===D);
   return {invs,rev,ref,pay,cashRef,created,bikes:created.reduce((a,o)=>a+o.lines.length,0),vouchers:created.flatMap(o=>vouchersOf(o))};
 }
-// Offers used on orders made that day: bikes and the discount compared with the normal price (Wednesday can be negative: bundle with coffee).
-function offersUsedHTML(D){ const g={};
-  ORDERS.filter(o=>dayKey(o.created)===D).forEach(o=>o.lines.forEach(l=>{ if(l.state==="cancelled"||l.state==="cancelPending") return; const k=lineKey(o,l); if(k==="none") return;
-    const H=l.H!=null?l.H:paidOf(l), name=offerName(k,o), e=g[name]=g[name]||{n:0,d:0}; e.n++; e.d=r3(e.d+l.rate*H-priceFor(o,l,H)); }));
-  const rows=Object.entries(g);
-  return `<div class="spanel"><h3>Offers used</h3><table class="rtbl"><tr><th>Offer</th><th class="r">Bikes</th><th class="r">Discount KWD</th></tr>${rows.length?rows.map(([k,v])=>`<tr><td>${esc(k)}</td><td class="r num">${v.n}</td><td class="r num">${f(v.d)}</td></tr>`).join(""):`<tr><td colspan="3" class="muted">None</td></tr>`}</table></div>`; }
+// Offers report: bikes rented per offer between two dates, filter by offer, export one row per bike.
+let OFR=null;
+function offerRows(from,to,sel){ const rows=[];
+  ORDERS.forEach(o=>{ const d=dayKey(o.created); if(d<from||d>to) return;
+    o.lines.forEach(l=>{ if(l.state==="cancelled"||l.state==="cancelPending") return;
+      const k=lineKey(o,l), name=k==="none"?"Normal rate":offerName(k,o); if(sel&&sel!==name) return;
+      const done=l.H!=null, H=done?l.H:paidOf(l), charged=priceFor(o,l,H), normal=r3(l.rate*H);
+      rows.push({d,at:o.created,o,l,name,H,done,charged,normal,disc:r3(normal-charged)}); }); });
+  return rows; }
+function offersReportHTML(D){ if(!OFR) OFR={from:D,to:D,sel:"",day:D};
+  const all=offerRows(OFR.from,OFR.to,""), names=[...new Set(all.map(r=>r.name))].sort();
+  const rows=OFR.sel?all.filter(r=>r.name===OFR.sel):all, g={};
+  rows.forEach(r=>{ const key=OFR.sel?r.l.name:r.name, e=g[key]=g[key]||{n:0,h:0,c:0,d:0}; e.n++; e.h+=r.H; e.c=r3(e.c+r.charged); e.d=r3(e.d+r.disc); });
+  const T=Object.values(g).reduce((a,e)=>({n:a.n+e.n,h:a.h+e.h,c:r3(a.c+e.c),d:r3(a.d+e.d)}),{n:0,h:0,c:0,d:0});
+  return `<div class="spanel" id="offRep"><h3>Offers report · bikes rented per offer</h3>
+    <div class="sgrid"><label>From<input type="date" id="ofFrom" value="${OFR.from}"></label><label>To<input type="date" id="ofTo" value="${OFR.to}"></label>
+      <label>Offer<select id="ofSel"><option value="">All offers</option>${names.map(n=>`<option ${n===OFR.sel?"selected":""}>${esc(n)}</option>`).join("")}${OFR.sel&&!names.includes(OFR.sel)?`<option selected>${esc(OFR.sel)}</option>`:""}</select></label></div>
+    <table class="rtbl"><tr><th>${OFR.sel?"Bike type":"Offer"}</th><th class="r">Bikes</th><th class="r">Hours</th><th class="r">Charged KWD</th><th class="r">Discount KWD</th></tr>
+      ${Object.keys(g).length?Object.entries(g).sort((a,b)=>b[1].n-a[1].n).map(([k,e])=>`<tr><td>${esc(k)}</td><td class="r num">${e.n}</td><td class="r num">${fmtH(e.h).replace(" h","")}</td><td class="r num">${f(e.c)}</td><td class="r num">${f(e.d)}</td></tr>`).join("")
+        +`<tr class="t"><td>Total${OFR.sel?` · ${esc(OFR.sel)}`:""}</td><td class="r num">${T.n}</td><td class="r num">${fmtH(T.h).replace(" h","")}</td><td class="r num">${f(T.c)}</td><td class="r num">${f(T.d)}</td></tr>`
+        :`<tr><td colspan="5" class="muted">No bikes rented in this period${OFR.sel?" with this offer":""}.</td></tr>`}</table>
+    <p class="lnote">Counted by order date. Bikes not yet returned use their booked hours. Cancelled bikes are left out. Wednesday can show a negative discount (its price includes the coffee).</p>
+    <div class="btnrow"><button class="btn" data-ofexp ${rows.length?"":"disabled"}>Export detailed list (${rows.length} bike${rows.length===1?"":"s"})</button></div></div>`; }
+function exportOffers(){ const rows=offerRows(OFR.from,OFR.to,OFR.sel);
+  const out=[["date","time","order","customer","mobile","bike code","bike type","offer","hours","status","normal price","charged","discount"]];
+  rows.sort((a,b)=>a.at-b.at).forEach(r=>out.push([r.d,clock(r.at),r.o.id,r.o.who,r.o.phone,r.l.code,r.l.name,r.name,fmtH(r.H).replace(" h",""),r.done?"returned":"out / not returned",f(r.normal),f(r.charged),f(r.disc)]));
+  const tag=(OFR.sel||"all-offers").toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g,"-").replace(/^-|-$/g,"")||"offer";
+  return saveFiles([{name:`ghostbike-offers-${tag}-${OFR.from}_to_${OFR.to}.csv`,data:csv(out)}]).then(w=>toast(w==="folder"?"Saved in the backup folder.":"Saved to Downloads.")); }
+function refreshOffRep(){ const box=$("offRep"); if(!box) return; box.outerHTML=offersReportHTML(OFR.from); }
 function renderReport(){
-  const D=$("repDate").value||dayKey(NOW()); $("repDate").value=D;
+  const D=$("repDate").value||dayKey(NOW()); $("repDate").value=D; if(OFR&&OFR.day!==D) OFR=null;
   const x=dayData(D), L=DAYS_LOG[D]||{};
   const sum=o=>r3(Object.values(o).reduce((a,b)=>a+b,0));
   const revT=sum(x.rev), refT=sum(x.ref), payT=sum(x.pay), cashIn=x.pay["Cash"]||0;
@@ -1428,7 +1453,7 @@ function renderReport(){
       <p>${x.created.length} orders · ${x.bikes} bikes · ${x.invs.length} documents · ${x.vouchers.length} coffee voucher${x.vouchers.length===1?"":"s"} issued${x.vouchers.length?` (${x.vouchers.map(v=>v.code).join(", ")})`:""}</p>
       ${D===dayKey(NOW())&&(openNow||toSettle||DRAFTS.length)?`<p class="warnmsg">Before closing: ${openNow} bike(s) still out or waiting · ${toSettle} to settle · ${DRAFTS.length} unfinished ticket(s).</p>`:""}
       <p><b>Net revenue:</b> <span class="num">${f(revT-refT)}</span> KWD (sales ${f(revT)} − refunds ${f(refT)})</p></div>
-    ${offersUsedHTML(D)}
+    ${offersReportHTML(D)}
     <div class="rgrid">${tbl("Revenue by bike type",x.rev)}${tbl("Refunds by bike type",x.ref,true)}${tbl("Received by payment method",x.pay)}</div>
     <div class="spanel"><h3>Cash drawer</h3><div class="sgrid">
       <label>Opening float<input class="num" id="cFloat" inputmode="decimal" value="${L.float??""}"></label>
@@ -1605,7 +1630,8 @@ function renderSettings(){
     <label>Free return / cancel window (minutes after pickup)<input data-o="graceMin" type="number" value="${O.graceMin}"></label>
     <label>Half-hour charge if back within (minutes after pickup)<input data-o="halfUpTo" type="number" value="${O.halfUpTo??35}"></label>
     <label>Free minutes after each hour<input data-o="overFree" type="number" value="${O.overFree??10}"></label>
-    <label>Half-hour charge up to (minutes after each hour)<input data-o="overHalf" type="number" value="${O.overHalf??35}"></label></div>
+    <label>Half-hour charge up to (minutes after each hour)<input data-o="overHalf" type="number" value="${O.overHalf??35}"></label>
+    <label class="onsw" style="align-self:end"><input type="checkbox" data-on="noEarlyRefund" ${O.noEarlyRefund!==false?"checked":""}> Bookings of 2+ hours: no refund after the free window</label></div>
     <p class="lnote">After each hour: the free minutes cost nothing, up to the half-hour limit is charged half an hour, after that a full hour (e.g. 10 / 35: 1:10 = 1 h, 1:35 = 1½ h, 1:36 = 2 h).</p>
     <p class="lnote">Changes apply to new orders only; confirmed orders keep the prices they were sold at.</p></div>
   <div class="spanel"><h3>Receipt and company</h3><div class="sgrid">
@@ -1814,6 +1840,7 @@ document.addEventListener("click",e=>{
   if(x=c("[data-closeday]")) return closeDay(x.dataset.closeday);
   if(x=c("[data-exp]")){ const [k,D]=x.dataset.exp.split("|"); return saveFiles([k==="je"?exportJE(D):k==="det"?exportDetails(D):exportCustomers()]).then(w=>toast(w==="folder"?"Saved in the backup folder.":"Saved to Downloads.")); }
   if(c("[data-backup]")) return backupNow();
+  if(c("[data-ofexp]")) return exportOffers();
   if(c("[data-hidebanner]")){ META.persistWarned=true; persist("meta"); return checkBanner(); }
   if(c("[data-folder]")) return chooseFolder();
   if(c("[data-restore]")) return $("restoreFile").click();
@@ -1832,6 +1859,9 @@ document.addEventListener("click",e=>{
 });
 $("dlg").addEventListener("close",()=>$("dlg").classList.remove("wide"));
 $("backupNow").onclick=()=>backupNow();
+document.addEventListener("change",e=>{ const id=e.target&&e.target.id; if(!OFR||!["ofFrom","ofTo","ofSel"].includes(id)) return;
+  OFR={from:$("ofFrom").value||OFR.from,to:$("ofTo").value||OFR.to,sel:$("ofSel").value,day:OFR.day};
+  if(OFR.to<OFR.from) OFR.to=OFR.from; refreshOffRep(); });
 $("restoreFile").onchange=e=>{ const fl=e.target.files[0]; e.target.value=""; if(fl) restoreFrom(fl); };
 $("lyRef").oninput=e=>{ S.lyRef=e.target.value; };
 $("phone").oninput=e=>{ const v=latinDigits(e.target.value); if(v!==e.target.value) e.target.value=v; if(S.custId||S.walkin){S.custId=null;S.walkin=false;S.dayOffer=false;} render(); };
