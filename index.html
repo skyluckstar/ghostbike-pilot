@@ -607,16 +607,22 @@ const isAdminEmail=e=>!!e&&ADMIN_EMAILS.includes(String(e).trim().toLowerCase())
 const signedInAdmin=()=>isAdminEmail(CURUSER&&CURUSER.email);
 let ELEV=null;                       // a manager unlocked the manager screens on a staff desk
 const isAdmin=()=>signedInAdmin()||!!ELEV;
+// Owner: the only login that sees sales figures (Day report and order totals). Settings stay with all managers.
+const OWNER_EMAILS=["feras.kastero@hotmail.com"];
+const isOwnerEmail=e=>!!e&&OWNER_EMAILS.includes(String(e).trim().toLowerCase());
+const isOwner=()=>isOwnerEmail(CURUSER&&CURUSER.email)||!!(ELEV&&isOwnerEmail(ELEV.email));
 const adminCloud=()=>signedInAdmin()?CLOUD:(ELEV&&ELEV.cloud);
 const MGR_MIN=10;                    // manager screens lock after this many idle minutes
 const withTimeout=(p,ms)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(Object.assign(new Error("No connection"),{code:"unavailable"})),ms))]);
 const devTag=()=>((CURUSER&&CURUSER.email)||"X")[0].toUpperCase();
-const offlineNo=()=>devTag()+Date.now().toString(36).toUpperCase().slice(-6);
+// Backup number when the cloud can't be reached: digits only — date, time and a 2-digit desk code (e.g. 241024-095132-47).
+const deskCode=()=>{ const e=((CURUSER&&CURUSER.email)||"x").toLowerCase(); let h=0; for(const ch of e) h=(h*31+ch.charCodeAt(0))%9973; return String(10+h%90); };
+const offlineNo=()=>{ const d=new Date(NOW()), p2=n=>String(n).padStart(2,"0"); return `${String(d.getFullYear()).slice(2)}${p2(d.getMonth()+1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}-${deskCode()}`; };
 // Sequential numbers come from one shared counter, so two desks never issue the same number. Offline: a unique fallback number.
 async function allocNos(want){
   try{
     return await withTimeout(CLOUD.txn(async t=>{ const c=(await t.get("config","counters"))||{}; const out={};
-      for(const k in want){ out[k]=(c[k]||0)+1; c[k]=(c[k]||0)+want[k]; } t.set("config","counters",c); return out; }),8000);
+      for(const k in want){ out[k]=(c[k]||0)+1; c[k]=(c[k]||0)+want[k]; } t.set("config","counters",c); return out; }),20000);
   }catch(e){ const out={}; for(const k in want) out[k]=offlineNo(); return out; }
 }
 const numFmt=(k,n)=>typeof n==="number"?{order:`T-${pad(n,5)}`,inv:`PINV-${pad(n)}`,rinv:`PRINV-${pad(n)}`,draft:`D-${pad(n,3)}`}[k]
@@ -1022,7 +1028,7 @@ async function confirmOrder(){
       const bad=sel.filter((code,i)=>!us[i]||!(us[i].st==="free"||(us[i].st==="draft"&&us[i].draft===draftId)));
       if(bad.length) throw Object.assign(new Error("taken"),{taken:bad});
       const out={order:(cnt.order||0)+1}; cnt.order=out.order; out.inv=(cnt.inv||0)+1; cnt.inv=out.inv;
-      t.set("config","counters",cnt); sel.forEach((code,i)=>t.set("units",code,{...us[i],st:"held",draft:null})); return out; }),8000);
+      t.set("config","counters",cnt); sel.forEach((code,i)=>t.set("units",code,{...us[i],st:"held",draft:null})); return out; }),20000);
   }catch(e){
     if(e.taken){ S.sel=S.sel.filter(x=>!e.taken.includes(x)); toast(`${e.taken.join(", ")} was just taken at another desk. Removed from this ticket — add another bike.`); return; }
     nos={order:offlineNo(),inv:offlineNo()};   // offline: unique numbers, synced later
@@ -1385,10 +1391,10 @@ function renderOrders(){
   const oRow=o=>{const s=orderStatus(o), t=r3(o.invoices.reduce((x,i)=>x+i.amount,0)), active=o.lines.some(l=>OPEN.includes(l.state));
     const btn=s==="To settle"?`<button data-goto="settle|${o.id}">Settle</button>${active?`<span><button class="ghost" data-goto="out|${o.id}">Open in delivery</button></span>`:""}`:s==="Closed"?"":`<button data-goto="out|${o.id}">Open in delivery</button>`;
     return `<div class="brow orow ${s==="Closed"?"done":s==="To settle"?"over":""}"><div><b class="num">${o.id}</b> ${esc(o.who)}<small>${dt(o.created)} · ${o.phone?fmtPhone(o.phone):"walk-in"} · ${s}</small></div>
-      <div class="oic">${icons(o.lines.map(l=>l.code))}</div><div><b class="num">${f(t)}</b><small>invoiced · ${o.invoices.length} doc${o.invoices.length===1?"":"s"}</small></div>
+      <div class="oic">${icons(o.lines.map(l=>l.code))}</div><div>${isOwner()?`<b class="num">${f(t)}</b>`:""}<small>${isOwner()?"invoiced · ":""}${o.invoices.length} doc${o.invoices.length===1?"":"s"}</small></div>
       <div class="racts">${btn}${o.invoices.length?`<span><button class="ghost" data-docs="${o.id}">Receipts & invoices</button></span>`:""}</div></div>`;};
   $("ordersList").innerHTML=sec("Unfinished · not confirmed",dRows,"No unfinished tickets.")
-    +sec(`Orders · ${RANGES.find(r=>r[0]===OR.range)[1]}`,ords.map(oRow),"No orders in this period.",`<span>Invoiced total <b class="num">${f(tot)}</b> KWD</span>`);
+    +sec(`Orders · ${RANGES.find(r=>r[0]===OR.range)[1]}`,ords.map(oRow),"No orders in this period.",isOwner()?`<span>Invoiced total <b class="num">${f(tot)}</b> KWD</span>`:"");
   $("ordCount").textContent=DRAFTS.length?DRAFTS.length:"";
 }
 
@@ -1642,7 +1648,7 @@ function renderSettings(){
     <label>Journal (code or name)<input data-a="journal" value="${esc(A.journal||"")}" placeholder="e.g. MISC"></label>
     <label>Rental revenue account code<input data-a="revenue" value="${esc(A.revenue||"")}"></label>
     ${SET.methods.map(m=>`<label>${esc(m)} account code<input data-a="${esc(m)}" value="${esc(A[m]||"")}"></label>`).join("")}</div></div>
-  <div class="spanel"><h3>Managers</h3><p>Only these logins can open Day report and Settings, or unlock them on a staff desk: <b>${ADMIN_EMAILS.join(", ")}</b>.</p>
+  <div class="spanel"><h3>Managers</h3><p>Settings: <b>${ADMIN_EMAILS.join(", ")}</b>. Day report and sales totals (confidential): <b>${OWNER_EMAILS.join(", ")}</b> only.</p>
     <p class="lnote">To add or remove a manager, ask support: the list is also set in the Firebase security rules.</p></div>
   <div class="spanel"><h3>Backups</h3>
     <p>Backup folder: <b>${META.folderName?esc(META.folderName):"not set (files go to Downloads)"}</b> · last backup: <b>${META.lastBackup?dt(META.lastBackup):"never"}</b> · browser storage permanent: <b>${META.persisted?"yes":"not confirmed"}</b></p>
@@ -1725,7 +1731,8 @@ function saveSettings(){ return saveAllSettings(); }
 let VIEW="new";
 let SETDIRTY=false;
 function showView(v){
-  if((v==="report"||v==="settings")&&!isAdmin()) return openUnlock(v);
+  if(v==="report"&&!isOwner()) return openUnlock(v);
+  if(v==="settings"&&!isAdmin()) return openUnlock(v);
   if(VIEW==="settings"&&v!=="settings"&&SETDIRTY){ if(confirm("You have unsaved changes in Settings. Save them now?")) saveSettings(); SETDIRTY=false; }
   VIEW=v; document.querySelectorAll("[data-view]").forEach(b=>b.setAttribute("aria-selected",b.dataset.view===v));
   $("newView").style.display=v==="new"?"":"none"; $("draftBar").style.display=v==="new"?"":"none";
@@ -1736,15 +1743,15 @@ function showView(v){
 const UNLOCK_ERR={"auth/invalid-credential":"Wrong email or password.","auth/wrong-password":"Wrong email or password.","auth/user-not-found":"Wrong email or password.",
   "auth/too-many-requests":"Too many attempts. Wait a minute and try again.","auth/network-request-failed":"No internet connection. Unlocking needs internet."};
 function openUnlock(v){
-  const name=v==="report"?"Day report":"Settings";
-  $("dlgBody").innerHTML=`<h3>🔒 ${name} · manager only</h3><div class="meta">A manager signs in to open it on this desk. It locks again when you leave it or after ${MGR_MIN} idle minutes.</div>
+  const name=v==="report"?"Day report":"Settings", own=v==="report";
+  $("dlgBody").innerHTML=`<h3>🔒 ${name} · ${own?"owner only":"manager only"}</h3><div class="meta">${own?"Sales figures are confidential: only the owner can open it.":"A manager signs in to open it on this desk."} It locks again when you leave it or after ${MGR_MIN} idle minutes.</div>
     <form id="unlockForm"><label class="flabel" for="ulEmail">Manager email</label><input id="ulEmail" class="finput" type="email" autocomplete="off" required>
     <label class="flabel" for="ulPass">Password</label><input id="ulPass" class="finput" type="password" autocomplete="off" required>
     <div class="fmsg" id="ulMsg"></div>
     <div class="acts"><button type="button" data-act="close">Cancel</button><button type="submit" class="primary" id="ulBtn">Unlock ${name}</button></div></form>`;
   $("dlg").showModal(); setTimeout(()=>$("ulEmail").focus(),50);
   $("unlockForm").onsubmit=async e=>{ e.preventDefault(); const em=$("ulEmail").value.trim(), pw=$("ulPass").value; $("ulMsg").textContent="";
-    if(!isAdminEmail(em)){ $("ulMsg").innerHTML='<span class="bad">This login is not a manager.</span>'; return; }
+    if(own?!isOwnerEmail(em):!isAdminEmail(em)){ $("ulMsg").innerHTML=`<span class="bad">${own?"Only the owner can open the Day report.":"This login is not a manager."}</span>`; return; }
     $("ulBtn").disabled=true; $("ulBtn").textContent="Checking…";
     try{ const cl=await withTimeout(CLOUD.elevate(em,pw),15000);
       ELEV={email:cl.email||em,cloud:cl,until:NOW()+MGR_MIN*60e3,unwatch:watchDays(cl)};
@@ -1766,7 +1773,8 @@ function render(){ renderNew(); }
 let REPORT_DIRTY=false;
 function refreshAll(){ renderNew(); renderBoard(); renderSettle(); renderMaint(); if(VIEW==="orders") renderOrders(); if(VIEW==="report"&&!REPORT_DIRTY) renderReport(); if(VIEW==="settings"&&!SETDIRTY) renderSettings();
   $("ordCount").textContent=DRAFTS.length?DRAFTS.length:""; $("brandName").textContent=SET.company.name;
-  document.querySelectorAll('[data-view="report"],[data-view="settings"]').forEach(t=>t.classList.toggle("locked",!isAdmin()));
+  document.querySelectorAll('[data-view="settings"]').forEach(t=>t.classList.toggle("locked",!isAdmin()));
+  document.querySelectorAll('[data-view="report"]').forEach(t=>t.classList.toggle("locked",!isOwner()));
   $("mgrLbl").innerHTML=ELEV?`<button class="bkbtn mgr" data-lockmgr title="Lock manager screens now">🔓 ${esc(ELEV.email.split("@")[0])} · Lock</button>`:"";
   $("todayLbl").textContent=`${DAYS[todayDow()]}${SET.testDay!==""?" (test)":""}`; }
 
