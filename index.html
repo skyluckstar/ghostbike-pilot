@@ -461,6 +461,7 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
 </section>
 <section id="settleView" class="board" aria-label="Settle payment">
   <p class="lnote" style="margin:0 0 12px">Returned bikes that used more than the paid first hour, and cancellations to refund. Tick the bikes the customer is settling now: each settlement gets its own invoice. Settlement is per order.</p>
+  <div class="dfilter"><input id="sq" type="search" placeholder="Find settlement: customer name, mobile, T-number or bike code" autocomplete="off" aria-label="Search settlements"></div>
   <div id="settleList"></div>
 </section>
 <section id="ordersView" class="board" aria-label="All orders">
@@ -687,7 +688,7 @@ const flush=async()=>{ await Promise.all(Object.values(orderChains)); };
 /* ---------- live updates from other desks ---------- */
 let refreshTimer=null, refreshWanted=false;
 function scheduleRefresh(){ clearTimeout(refreshTimer); refreshTimer=setTimeout(()=>{
-  const a=document.activeElement, STATIC=["ofFrom","ofTo","ofSel","lyRef","phone","bq","pscan","dq","oq","repDate","rFrom","rTo"];
+  const a=document.activeElement, STATIC=["sq","ofFrom","ofTo","ofSel","lyRef","phone","bq","pscan","dq","oq","repDate","rFrom","rTo"];
   if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&!STATIC.includes(a.id)&&!$("dlg").contains(a)){ refreshWanted=true; return; }   // never wipe what someone is typing
   if(typeof refreshAll==="function"&&SET&&BIKES) refreshAll(); },60); }
 document.addEventListener("focusout",()=>{ if(refreshWanted){ refreshWanted=false; scheduleRefresh(); } });
@@ -1108,7 +1109,7 @@ const DST=[["all","All"],["waiting","Waiting pickup"],["riding","Riding"],["over
 const overFreeOf=o=>(o&&o.p&&o.p.overFree!=null)?+o.p.overFree:graceOf(o);
 function lineMatchesSt(l,st){ if(st==="all") return OPEN.includes(l.state); if(st==="over") return l.state==="riding"&&Math.floor((NOW()-l.pick)/MIN)>paidOf(l)*60+overFreeOf(orderOf(l)); return l.state===st; }
 function matchQ(q,id,who,phone,codes){ q=q.trim().toLowerCase(); if(!q) return true; const d=digits(q);
-  return id.toLowerCase().includes(q)||who.toLowerCase().includes(q)||(d.length>=3&&digits(phone).includes(d))||codes.some(c=>c.toLowerCase().includes(q)); }
+  return id.toLowerCase().includes(q)||who.toLowerCase().includes(q)||(d.length>=3&&!/[a-z\u0621-\u064a]/i.test(q)&&digits(phone).includes(d))||codes.some(c=>c.toLowerCase().includes(q)); }
 function lineStatus(l){
   const g=graceOf(orderOf(l)), P=paidOf(l), el=l.pick?NOW()-l.pick:0, left=l.pick?l.pick+P*60*MIN-NOW():0, gl=l.pick?l.pick+(P*60+g)*MIN-NOW():0;
   switch(l.state){
@@ -1257,7 +1258,9 @@ function doCancel(){
 const SETTLE=["toSettle","cancelPending","refundPending"];
 const REFS=["cancelPending","refundPending"], refAmtOf=l=>l.state==="cancelPending"?l.adv:(l.refund||0);
 function renderSettle(){
-  const list=ORDERS.filter(o=>o.lines.some(l=>SETTLE.includes(l.state)));
+  const all=ORDERS.filter(o=>o.lines.some(l=>SETTLE.includes(l.state))), q=($("sq")||{}).value||"";
+  const list=all.filter(o=>matchQ(q,o.id,o.who,o.phone,o.lines.flatMap(l=>[l.code,...(l.swaps||[]).map(s=>s.from)])));
+  if(all.length&&!list.length){ $("settleList").innerHTML=`<div class="empty">No settlement matches “${esc(q)}”. <button class="linkbtn" data-sclear>Clear search</button></div>`; $("settleCount").textContent=all.reduce((a,o)=>a+o.lines.filter(l=>SETTLE.includes(l.state)).length,0); return; }
   $("settleList").innerHTML=list.length?list.map(o=>{
     const due=o.lines.filter(l=>l.state==="toSettle"), refunds=o.lines.filter(l=>REFS.includes(l.state));
     due.forEach(l=>{ if(l.pick_sel===undefined) l.pick_sel=true; });
@@ -1894,6 +1897,7 @@ document.addEventListener("click",e=>{
   if(x=c("[data-goto]")){ const [v,id]=x.dataset.goto.split("|"); if(v==="out"){DF.q=id;$("dq").value=id;DF.st="all";} showView(v); return refreshAll(); }
   // delivery
   if(x=c("[data-dst]")){ DF.st=x.dataset.dst; return renderBoard(); }
+  if(c("[data-sclear]")){ $("sq").value=""; return renderSettle(); }
   if(c("[data-dclear]")){ DF.q=""; DF.st="all"; $("dq").value=""; return renderBoard(); }
   if(x=c("[data-pickup]")) return confirmPickup(x.dataset.pickup);
   if(x=c("[data-pickall]")) return confirmPickupAll(x.dataset.pickall);
@@ -1955,6 +1959,7 @@ $("bq").oninput=e=>{ S.q=e.target.value; render(); };
 $("bq").onkeydown=e=>{ if(e.key!=="Enter") return; const v=e.target.value.trim(); if(/^[A-Z0-9]+-\d+$/i.test(v)){ e.preventDefault(); e.target.value=""; S.q=""; scanToTicket(v); } };
 $("pscan").onkeydown=e=>{ if(e.key!=="Enter") return; const v=e.target.value.trim(); e.target.value=""; if(v) handleDeskScan(v); };
 $("dq").oninput=e=>{ DF.q=e.target.value; renderBoard(); };
+$("sq").oninput=()=>renderSettle();
 $("oq").oninput=()=>renderOrders();
 $("rFrom").onchange=e=>{OR.from=e.target.value;renderOrders();}; $("rTo").onchange=e=>{OR.to=e.target.value;renderOrders();};
 $("repDate").onchange=()=>{REPORT_DIRTY=false;renderReport();};
