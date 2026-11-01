@@ -513,7 +513,10 @@ function hoursRule(p,m){ const g=+p.graceMin, h=+p.halfUpTo, of=+p.overFree, oh=
   if(m<=g) return 0; if(m<=h) return 0.5; if(m<=60) return 1;
   const k=Math.floor(m/60), r=m-60*k; return r<=of?k:r<=oh?k+0.5:k+1; }
 function chargeH(o,l,ms){ const p=(o&&o.p)||{}, m=Math.max(0,Math.floor(ms/MIN));
-  if(p.overFree!=null){ const H=hoursRule(p,m), P=paidOf(l);
+  if(p.overFree!=null){ const P=paidOf(l);
+    if(p.halfOnlyMulti&&P===1){ const g=+p.graceMin, of=+p.overFree;      // 1-hour rental: no half hour at all
+      if(m<=g) return 0; if(m<=60+of) return 1; const k=Math.floor(m/60), r=m-60*k; return r<=of?k:k+1; }
+    const H=hoursRule(p,m);
     return p.noEarlyRefund&&P>1&&m>+p.graceMin?Math.max(H,P):H; }   // bookings of 2+ hours: booked hours kept after the free window
   if(p.halfUpTo!=null){ if(m<=+p.graceMin) return 0; if(m<=+p.halfUpTo) return 0.5; }
   return chg(ms,graceOf(o),paidOf(l)); }
@@ -542,7 +545,7 @@ const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturda
 /* ---------- defaults (from the live Odoo product list and pricelists, 30 Sep 2026) ---------- */
 const DEFAULT_SETTINGS={
   company:{name:"Ghost Bike",ar:"جوست بايك",line:"Bicycle rental · Kuwait",phone:"50825528",cashier:"Counter 1"},
-  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:35,returnGrace:30,overFree:10,overHalf:35,noEarlyRefund:true,nbkOn:true,snOn:true,lyOn:true,sunOn:true,monOn:true,wedOn:true},
+  offers:{sunPct:50,monPrice:1.0,wedPrice:1.75,nbkPct:20,coffeePrice:1.25,graceMin:10,halfUpTo:35,returnGrace:30,overFree:10,overHalf:35,noEarlyRefund:true,halfOnlyMulti:true,nbkOn:true,snOn:true,lyOn:true,sunOn:true,monOn:true,wedOn:true},
   customOffers:[],
   methods:["KNET","Cash","Card","Pay link"],
   accounts:{journal:"",revenue:"","KNET":"","Cash":"","Card":"","Pay link":""},
@@ -889,7 +892,8 @@ function renderNew(){
   if(S.ly&&!S.lyCodes.length&&S.sel.length===1) S.lyCodes=[S.sel[0]];
   const O_=SET.offers; if(O_.snOn===false) S.sn=false; if(O_.lyOn===false) S.ly=false; if(O_.nbkOn===false) S.nbk=false;
   $("tSN").hidden=O_.snOn===false; $("tLY").hidden=O_.lyOn===false; $("tNBK").hidden=O_.nbkOn===false;
-  $("ruleNote").textContent=`Back within ${O_.graceMin} min: full refund; within ${O_.halfUpTo} min: half an hour is charged and the rest refunded. After each hour: ${O_.overFree} min free, up to ${O_.overHalf} min = half an hour, then a full hour.${O_.noEarlyRefund?` Bookings of 2 hours or more: no refund after ${O_.graceMin} min.`:""}`;
+  $("ruleNote").textContent=O_.halfOnlyMulti?`Back within ${O_.graceMin} min: full refund. 1 hour: after that the full hour; after the hour ${O_.overFree} min free, then every started hour. 2 hours or more: no refund after ${O_.graceMin} min; after the booked hours ${O_.overFree} min free, up to ${O_.overHalf} min = half an hour, then a full hour.`
+    :`Back within ${O_.graceMin} min: full refund; within ${O_.halfUpTo} min: half an hour is charged and the rest refunded. After each hour: ${O_.overFree} min free, up to ${O_.overHalf} min = half an hour, then a full hour.${O_.noEarlyRefund?` Bookings of 2 hours or more: no refund after ${O_.graceMin} min.`:""}`;
   const ACO=activeCO(); S.co=(S.co||[]).filter(id=>ACO.some(c=>c.id===id));
   $("coBox").innerHTML=ACO.map(c=>{ const ps=BIKES.filter(b=>c.prices[b.id]!=null&&c.prices[b.id]!=="").map(b=>`${esc(b.name)} ${f(+c.prices[b.id])}`);
     return `<button class="toggle" data-co="${esc(c.id)}" aria-pressed="${S.co.includes(c.id)}"><span>${esc(c.name)}${c.ar?` <span class="ar">${esc(c.ar)}</span>`:""}<small>${ps.slice(0,3).join(" · ")}${ps.length>3?` · +${ps.length-3} more`:""}</small></span><span class="sw" aria-hidden="true"></span></button>`; }).join("");
@@ -1110,6 +1114,11 @@ function lineStatus(l){
   switch(l.state){
     case "waiting": return {cls:"wait",txt:"Waiting for pickup",sub:"clock not started"};
     case "riding": { const op=(orderOf(l)||{}).p||{}, mm=Math.floor(el/MIN);
+      if(op.halfOnlyMulti&&P===1&&op.overFree!=null){ const of=+op.overFree, H1=fmtH(chargeH(orderOf(l),l,el));
+        if(mm<=+op.graceMin) return {cls:"",txt:`Free return · ${+op.graceMin-mm}m left`,sub:"then the full hour"};
+        if(mm<60) return {cls:"",txt:`${hm(left)} left in 1st hour`,sub:`then ${of} min free`};
+        const r=mm%60; if(r<=of) return {cls:mm<120?"soon":"over",txt:`Free minutes · ${of-r}m left`,sub:`${H1} chargeable · then +1 h`};
+        return {cls:"over",txt:`${H1} chargeable`,sub:`next free minutes at ${Math.floor(mm/60)+1}:00`}; }
       if(op.noEarlyRefund&&P>1&&mm<=+op.graceMin) return {cls:"",txt:`Free return · ${+op.graceMin-mm}m left`,sub:`then the ${P} booked hours are kept`};
       if(op.halfUpTo!=null&&mm<=+op.halfUpTo&&!(op.noEarlyRefund&&P>1)) return mm<=+op.graceMin?{cls:"",txt:`Free return · ${+op.graceMin-mm}m left`,sub:`then ½ h until ${op.halfUpTo} min`}:{cls:"",txt:`½ h if back within ${+op.halfUpTo-mm}m`,sub:`then full ${P===1?"1st hour":P+" paid hours"}`};
       if(op.overFree!=null){ const of=+op.overFree, oh=+op.overHalf, H=fmtH(chargeH(orderOf(l),l,el));
@@ -1137,7 +1146,7 @@ function renderBoard(){
     const riding=o.lines.filter(l=>l.state==="riding").length, waiting=o.lines.filter(l=>l.state==="waiting").length;
     const k=[...new Set(o.lines.map(l=>lineKey(o,l)))].filter(x=>x!=="none");
     return `<div class="group"><div class="ghead"><b>${esc(o.who)}</b><span>${o.id}</span>${o.phone?`<span class="num">${fmtPhone(o.phone)}</span>`:""}${k.map(x=>`<span class="tag">${esc(offerName(x,o))}</span>`).join("")}
-      <span>${riding} riding${waiting?` · ${waiting} waiting`:""} · ${o.lines.length} bikes</span>${waiting>1?`<button class="pickall" data-pickall="${o.id}">Pick up all ${waiting}</button>`:""}</div>
+      <span>${riding} riding${waiting?` · ${waiting} waiting`:""} · ${o.lines.length} bikes</span>${waiting>1?`<button class="pickall" data-pickall="${o.id}">Pick up all ${waiting}</button>`:""}${riding>1?`<button class="pickall" data-retall="${o.id}">Return all ${riding}</button>`:""}</div>
       ${o.lines.map(l=>{ const s=lineStatus(l), el=l.pick?(l.ret||NOW())-l.pick:0;
         const btns=l.state==="waiting"?`<div class="racts"><button data-pickup="${l.code}">Confirm pickup</button><span><button class="ghost" data-cancel="${l.code}">Cancel</button></span></div>`
           :l.state==="riding"?`<div class="racts"><button data-ret="${l.code}">Confirm return</button><span><button class="ghost" data-swapride="${l.code}">Swap bike</button><button class="ghost" data-cancel="${l.code}">Cancel${NOW()-l.pick<o.p.graceMin*MIN?` · ${o.p.graceMin-Math.floor((NOW()-l.pick)/MIN)}m`:""}</button></span></div>`:`<span></span>`;
@@ -1172,6 +1181,27 @@ function openReturn(c){
     <div class="acts"><button data-act="close">Cancel</button><button class="primary" data-act="doreturn">Confirm bike received</button></div>`;
   drawCond(); $("dlg").showModal();
 }
+// Return all: every bike of the group that is riding, received at the same moment; each bike is charged on its own clock.
+let PALL=null;
+function openReturnAll(id){ const o=ORDERS.find(x=>x.id===id); if(!o) return; const now=NOW();
+  const ls=o.lines.filter(l=>l.state==="riding"); if(!ls.length) return;
+  PALL={id,now,rows:ls.map(l=>{ const el=now-l.pick, H=chargeH(o,l,el), diff=r3(priceFor(o,l,H)-l.adv); return {c:l.code,H,el,extra:Math.max(0,diff),refund:Math.max(0,-diff),cond:"ok",issue:null}; })};
+  drawReturnAll(); $("dlg").showModal(); }
+function drawReturnAll(){ const o=ORDERS.find(x=>x.id===PALL.id), due=r3(PALL.rows.reduce((a,r)=>a+r.extra,0)), back=r3(PALL.rows.reduce((a,r)=>a+r.refund,0));
+  $("dlgBody").innerHTML=`<h3>Receive all ${PALL.rows.length} bikes</h3><div class="meta">${o.id} · ${esc(o.who)} · received ${clock(PALL.now)}</div>
+    ${PALL.rows.map((r,i)=>{ const l=o.lines.find(x=>x.code===r.c); return `<div class="kv" style="align-items:center;gap:8px;flex-wrap:wrap"><span><b class="num">${r.c}</b> ${esc(l.name)} · <span class="num">${hm(r.el)} → ${fmtH(r.H)}</span></span>
+      <span class="num">${r.extra>0?`pays ${f(r.extra)}`:r.refund>0?`refund ${f(r.refund)}`:"✓ covered"}</span>
+      <span style="flex-basis:100%;display:flex;gap:6px;flex-wrap:wrap"><button class="snchip" data-racond="${i}" aria-pressed="${r.cond==="maint"}">Needs maintenance</button>${r.cond==="maint"?ISSUES.map(x=>`<button class="snchip" data-raissue="${i}|${x}" aria-pressed="${r.issue===x}">${x}</button>`).join(""):""}</span></div>`; }).join("")}
+    <div class="bal ${due>0?"due":back>0?"ref":"zero"}"><span>${due>0?"Customer pays at the front":back>0?"Refund at the front":"Covered by the advance"}</span><span class="num">${due>0?f(due):back>0?f(back):"✓"}</span></div>
+    ${due>0&&back>0?`<div class="kv"><span>Also refund at the front</span><span class="num">${f(back)}</span></div>`:""}
+    <div class="acts"><button data-act="close">Cancel</button><button class="primary" data-act="doreturnall" ${PALL.rows.some(r=>r.cond==="maint"&&!r.issue)?"disabled":""}>Confirm ${PALL.rows.length} bikes received</button></div>`; }
+function doReturnAll(){ if(!PALL||PALL.rows.some(r=>r.cond==="maint"&&!r.issue)) return; const o=ORDERS.find(x=>x.id===PALL.id);
+  PALL.rows.forEach(r=>{ const l=o.lines.find(x=>x.code===r.c&&x.state==="riding"); if(!l) return;
+    Object.assign(l,{ret:PALL.now,H:r.H,extra:r.extra,refund:r.refund,cond:r.cond,issue:r.issue,state:r.extra>0.0005?"toSettle":r.refund>0.0005?"refundPending":"closed"});
+    setUnitAfter(l.code,r.cond,r.issue,PALL.now); });
+  const due=r3(PALL.rows.reduce((a,r)=>a+r.extra,0)), back=r3(PALL.rows.reduce((a,r)=>a+r.refund,0)), n=PALL.rows.length; PALL=null;
+  persistOrder(o); persist("units"); $("dlg").close(); refreshAll();
+  toast(`${n} bikes received.${due>0?` Customer to pay ${f(due)} KWD at the front.`:""}${back>0?` Refund ${f(back)} KWD at the front.`:""}${!due&&!back?" Nothing more to pay.":""}`); }
 function setUnitAfter(code,cond,issue,at){ const u=unit(code); u.st=cond==="maint"?"maint":"free"; u.issue=issue; u.since=at; if(u.st==="free") syncUnits(bikeById(u.bikeId)); }
 function doReturn(){
   if(pending.cond==="maint"&&!pending.issue) return;
@@ -1247,12 +1277,37 @@ function renderSettle(){
 let SP=null;
 function openSettle(id){
   const o=ORDERS.find(x=>x.id===id), ls=o.lines.filter(l=>l.state==="toSettle"&&l.pick_sel);
-  SP={id,codes:ls.map(l=>l.code),due:r3(ls.reduce((a,l)=>a+l.extra,0)),method:SET.methods[0],lines:[]};
+  const gross=r3(ls.reduce((a,l)=>a+l.extra,0)); SP={id,codes:ls.map(l=>l.code),gross,due:gross,disc:null,method:SET.methods[0],lines:[]};
   $("dlgBody").innerHTML=`<h3>Settle ${ls.length} bike${ls.length>1?"s":""} · ${o.id}</h3><div class="meta">${esc(o.who)} · new invoice for the extra hours</div>
     ${ls.map(l=>`<div class="kv"><span><b class="num">${l.code}</b> ${esc(l.name)} · ${fmtH(l.H)}</span><span class="num">${f(l.extra)}</span></div>`).join("")}
-    <div id="settlePay"></div><div class="acts"><button data-act="close">Cancel</button><button class="primary" data-act="dosettle">Post invoice</button></div>`;
-  drawSettle(); $("dlg").showModal();
+    <div id="discBox"></div><div id="settlePay"></div><div class="acts"><button data-act="close">Cancel</button><button class="primary" data-act="dosettle">Post invoice</button></div>`;
+  drawDisc(); drawSettle(); $("dlg").showModal();
 }
+// Special discount on the final invoice: granted by the owner only (signed in, or approved with the owner's password on this desk).
+function drawDisc(){ const b=$("discBox"); if(!b) return; const d=SP.disc;
+  if(d&&d.amt>0){ b.innerHTML=`<div class="kv" style="color:var(--go)"><span>Special discount${d.pct?` ${d.pct}%`:""} · ${esc(d.reason||"")} <small class="muted">by ${esc(d.by.split("@")[0])}</small></span><span class="num">−${f(d.amt)}</span></div>
+      <div class="kv"><span><b>Due after discount</b></span><span class="num"><b>${f(SP.due)}</b></span></div>${SP.lines.length?"":`<div class="btnrow" style="margin:4px 0"><button class="btn" data-discdel>Remove discount</button></div>`}`; return; }
+  if(SP.discStep==="auth"){ b.innerHTML=`<div class="spanel" style="margin:10px 0;padding:12px"><b>Owner approval</b><div class="meta">Only the owner can grant a special discount.</div>
+      <label class="flabel" for="dEmail">Owner email</label><input id="dEmail" class="finput" type="email" autocomplete="off" value="${esc(OWNER_EMAILS[0])}">
+      <label class="flabel" for="dPass">Password</label><input id="dPass" class="finput" type="password" autocomplete="off"><div class="fmsg" id="dMsg"></div>
+      <div class="btnrow"><button class="btn" data-disccancel>Cancel</button><button class="btn pri" data-discauth>Approve</button></div></div>`; setTimeout(()=>$("dPass")&&$("dPass").focus(),30); return; }
+  if(SP.discStep==="form"){ b.innerHTML=`<div class="spanel" style="margin:10px 0;padding:12px"><b>Special discount</b> <small class="muted">approved by ${esc(SP.discBy.split("@")[0])}</small>
+      <div class="sgrid"><label>Type<select id="dType"><option value="amt">Amount KWD</option><option value="pct">Percent %</option></select></label>
+      <label>Value<input id="dVal" class="num" inputmode="decimal"></label><label>Reason<input id="dWhy" placeholder="e.g. loyal customer"></label></div>
+      <div class="btnrow"><button class="btn" data-disccancel>Cancel</button><button class="btn pri" data-discapply>Apply discount</button></div></div>`; return; }
+  b.innerHTML=SP.lines.length||SP.gross<0.0005?"":`<div class="btnrow" style="margin:8px 0 0"><button class="btn" data-discopen>Special discount (owner)</button></div>`; }
+async function discAuth(){ const em=$("dEmail").value.trim(), pw=$("dPass").value; $("dMsg").textContent="";
+  if(!isOwnerEmail(em)){ $("dMsg").innerHTML='<span class="bad">Only the owner can grant a special discount.</span>'; return; }
+  const btn=document.querySelector("[data-discauth]"); btn.disabled=true; btn.textContent="Checking…";
+  try{ const cl=await withTimeout(CLOUD.elevate(em,pw),15000); try{ cl.close&&cl.close(); }catch(e){}
+    SP.discBy=cl.email||em; SP.discStep="form"; drawDisc(); }
+  catch(err){ $("dMsg").innerHTML=`<span class="bad">${esc(UNLOCK_ERR[err.code]||err.message)}</span>`; btn.disabled=false; btn.textContent="Approve"; } }
+function discApply(){ const t=$("dType").value, v=parseAmt($("dVal").value), why=$("dWhy").value.trim();
+  if(!(v>0)) return toast("Enter the discount value.");
+  if(t==="pct"&&v>100) return toast("A percentage can't be more than 100.");
+  if(!why) return toast("Enter the reason for the discount.");
+  const amt=r3(Math.min(SP.gross,t==="pct"?SP.gross*v/100:v));
+  SP.disc={amt,pct:t==="pct"?v:null,reason:why,by:SP.discBy}; SP.due=r3(SP.gross-amt); SP.discStep=null; drawDisc(); drawSettle(); }
 function drawSettle(){
   const paid=SP.lines.reduce((a,l)=>a+l.amt,0), left=r3(SP.due-paid);
   $("settlePay").innerHTML=`${left>0.0005?`<div class="amtrow" style="margin-top:12px"><label for="samt">Amount to take</label><input id="samt" class="num" inputmode="decimal" value="${f(left)}" aria-label="Amount to take"></div>
@@ -1265,15 +1320,16 @@ function drawSettle(){
 function addSettlePay(){
   const paid=SP.lines.reduce((a,l)=>a+l.amt,0), left=r3(SP.due-paid), amt=parseAmt(($("samt")||{}).value);
   if(!(amt>0)) return toast("Enter an amount."); if(left<=0.0005) return toast("Nothing left to collect.");
-  if(amt>left+0.0005){ if(SP.method==="Cash"){SP.lines.push({m:"Cash",amt:left,change:r3(amt-left)});toast(`Give change: ${f(amt-left)} KWD`);drawSettle();return;}
+  if(amt>left+0.0005){ if(SP.method==="Cash"){SP.lines.push({m:"Cash",amt:left,change:r3(amt-left)});toast(`Give change: ${f(amt-left)} KWD`);drawSettle();drawDisc();return;}
     return toast(`${SP.method} amount can't be more than the remaining ${f(left)}.`); }
-  SP.lines.push({m:SP.method,amt:r3(amt)}); drawSettle();
+  SP.lines.push({m:SP.method,amt:r3(amt)}); drawSettle(); drawDisc();
 }
 async function doSettle(){
   if(BUSY) return; BUSY=true; const pb=document.querySelector(".dlg .primary"); if(pb){pb.disabled=true;pb.textContent="Saving…";}
   const no=numFmt("inv",(await allocNos({inv:1})).inv); BUSY=false;
   const o=ORDERS.find(x=>x.id===SP.id);
   const inv=newInvoice(no,o,"Extra hours",SP.codes,SP.due,SP.lines,l=>({code:l.code,name:l.name,desc:`${fmtH(l.H)} used · ${paidOf(l)===1?"1st hour":paidOf(l)+" h"} paid in advance`,amt:l.extra}));
+  if(SP.disc&&SP.disc.amt>0){ inv.items.push({code:"",name:"Special discount",desc:`${SP.disc.pct?SP.disc.pct+"% · ":""}${SP.disc.reason} · granted by ${SP.disc.by.split("@")[0]}`,amt:-SP.disc.amt,disc:true}); inv.disc={...SP.disc}; }
   SP.codes.forEach(c=>{const l=o.lines.find(x=>x.code===c); l.state="closed"; l.inv=inv.no; delete l.pick_sel;});
   o.lines.forEach(l=>{ if(l.state==="toSettle") l.pick_sel=true; });   // remaining bikes ready for the next settlement
   persistOrder(o); refreshAll(); openDocs(o.id,inv.no);
@@ -1314,7 +1370,8 @@ function receiptHTML(o,inv){
     <div class="rc-rule"></div><div class="rc-kv tot"><span>${cr?"Refunded":"Total"} KWD</span><span>${f(Math.abs(inv.amount))}</span></div>
     ${inv.pays.length?"":`<div class="rc-kv"><span>Paid</span><span>No charge</span></div>`}${inv.pays.map(p=>`<div class="rc-kv"><span>${cr?"Paid out":"Paid"} · ${esc(p.m)}</span><span>${f(Math.abs(p.amt))}</span></div>${p.change?`<div class="rc-kv"><span>Cash given</span><span>${f(p.amt+p.change)}</span></div><div class="rc-kv"><span>Change</span><span>${f(p.change)}</span></div>`:""}`).join("")}
     ${(!cr&&/Advance/.test(inv.kind))?vouchersOf(o).map(v=>`<div class="rc-rule"></div><div class="rc-v">FREE COFFEE VOUCHER<br><small>قهوة مجانية من المقهى</small><br><span style="font-size:16px;letter-spacing:2px">${v.code}</span><br>1 coffee · ${o.id}${v.bike?` · bike ${v.bike}`:""}<br><small>Valid today at the café next door. One coffee, one use only.</small></div>`).join(""):""}
-    <div class="rc-rule"></div><div class="rc-f">${cr?"Refund given in cash.":(o.p.overFree!=null?`Back within ${o.p.graceMin} min: full refund. Within ${o.p.halfUpTo} min: half hour. After each hour: ${o.p.overFree} min free, up to ${o.p.overHalf} min half hour, then a full hour.${o.p.noEarlyRefund&&o.lines.some(l=>paidOf(l)>1)?` Booked hours are not refunded after ${o.p.graceMin} min.`:""}`
+    <div class="rc-rule"></div><div class="rc-f">${cr?"Refund given in cash.":(o.p.overFree!=null&&o.p.halfOnlyMulti?`Back within ${o.p.graceMin} min: full refund. 1 hour: ${o.p.overFree} min free after the hour, then every started hour. 2+ hours: booked hours not refunded; after them ${o.p.overFree} min free, up to ${o.p.overHalf} min half hour, then a full hour.`
+      :o.p.overFree!=null?`Back within ${o.p.graceMin} min: full refund. Within ${o.p.halfUpTo} min: half hour. After each hour: ${o.p.overFree} min free, up to ${o.p.overHalf} min half hour, then a full hour.${o.p.noEarlyRefund&&o.lines.some(l=>paidOf(l)>1)?` Booked hours are not refunded after ${o.p.graceMin} min.`:""}`
       :`${o.p.halfUpTo!=null?`Back within ${o.p.graceMin} min: full refund. Within ${o.p.halfUpTo} min: half hour charged. `:""}Paid hours include ${graceOf(o)} min return grace. After that, every started hour is charged.`)}<br>Served by ${esc((inv.by||"").split("@")[0]||C.cashier)} · شكراً لزيارتكم</div></div>`;
 }
 function invoiceHTML(o,inv){
@@ -1411,11 +1468,11 @@ function renderMaint(){
 /* ================= DAY REPORT, CASH COUNT, EXPORTS ================= */
 function dayData(D){
   const invs=[]; ORDERS.forEach(o=>o.invoices.forEach(i=>{ if(dayKey(i.at)===D) invs.push({o,i}); }));
-  const rev={}, ref={}, pay={}; let cashRef=0;
-  invs.forEach(({i})=>{ i.items.forEach(it=>{ if(it.amt>=0) rev[it.name]=r3((rev[it.name]||0)+it.amt); else ref[it.name]=r3((ref[it.name]||0)-it.amt); });
+  const rev={}, ref={}, pay={}; let cashRef=0, disc=0;
+  invs.forEach(({i})=>{ i.items.forEach(it=>{ if(it.disc){ disc=r3(disc-it.amt); return; } if(it.amt>=0) rev[it.name]=r3((rev[it.name]||0)+it.amt); else ref[it.name]=r3((ref[it.name]||0)-it.amt); });
     i.pays.forEach(p=>{ if(p.amt>=0) pay[p.m]=r3((pay[p.m]||0)+p.amt); else cashRef=r3(cashRef-p.amt); }); });
   const created=ORDERS.filter(o=>dayKey(o.created)===D);
-  return {invs,rev,ref,pay,cashRef,created,bikes:created.reduce((a,o)=>a+o.lines.length,0),vouchers:created.flatMap(o=>vouchersOf(o))};
+  return {invs,rev,ref,pay,cashRef,disc,created,bikes:created.reduce((a,o)=>a+o.lines.length,0),vouchers:created.flatMap(o=>vouchersOf(o))};
 }
 // Offers report: bikes rented per offer between two dates, filter by offer, export one row per bike.
 let OFR=null;
@@ -1458,7 +1515,7 @@ function renderReport(){
     <div class="spanel"><h3>${DAYS[new Date(D+"T12:00").getDay()]} ${D}</h3>
       <p>${x.created.length} orders · ${x.bikes} bikes · ${x.invs.length} documents · ${x.vouchers.length} coffee voucher${x.vouchers.length===1?"":"s"} issued${x.vouchers.length?` (${x.vouchers.map(v=>v.code).join(", ")})`:""}</p>
       ${D===dayKey(NOW())&&(openNow||toSettle||DRAFTS.length)?`<p class="warnmsg">Before closing: ${openNow} bike(s) still out or waiting · ${toSettle} to settle · ${DRAFTS.length} unfinished ticket(s).</p>`:""}
-      <p><b>Net revenue:</b> <span class="num">${f(revT-refT)}</span> KWD (sales ${f(revT)} − refunds ${f(refT)})</p></div>
+      <p><b>Net revenue:</b> <span class="num">${f(revT-refT-x.disc)}</span> KWD (sales ${f(revT)} − refunds ${f(refT)}${x.disc?` − special discounts ${f(x.disc)}`:""})</p></div>
     ${offersReportHTML(D)}
     <div class="rgrid">${tbl("Revenue by bike type",x.rev)}${tbl("Refunds by bike type",x.ref,true)}${tbl("Received by payment method",x.pay)}</div>
     <div class="spanel"><h3>Cash drawer</h3><div class="sgrid">
@@ -1484,6 +1541,7 @@ function exportJE(D){
   Object.entries(x.rev).forEach(([n,v])=>L.push([A.revenue||"",`Rental ${n}`,0,v]));
   Object.entries(x.ref).forEach(([n,v])=>L.push([A.revenue||"",`Refund ${n}`,v,0]));
   if(x.cashRef) L.push([A["Cash"]||"","Cash refunds",0,x.cashRef]);
+  if(x.disc) L.push([A.revenue||"","Special discounts",x.disc,0]);
   L.splice(0,L.length,...L.filter(l=>Math.abs(l[2])>0.0005||Math.abs(l[3])>0.0005));
   L.forEach((l,i)=>rows.push(i===0?[A.journal||"",D,`Ghost Bike pilot ${D}`,l[0],l[1],f(l[2]),f(l[3])]:["","","",l[0],l[1],f(l[2]),f(l[3])]));
   return {name:`ghostbike-journal-${D}.csv`,data:csv(rows)};
@@ -1637,6 +1695,7 @@ function renderSettings(){
     <label>Half-hour charge if back within (minutes after pickup)<input data-o="halfUpTo" type="number" value="${O.halfUpTo??35}"></label>
     <label>Free minutes after each hour<input data-o="overFree" type="number" value="${O.overFree??10}"></label>
     <label>Half-hour charge up to (minutes after each hour)<input data-o="overHalf" type="number" value="${O.overHalf??35}"></label>
+    <label class="onsw" style="align-self:end"><input type="checkbox" data-on="halfOnlyMulti" ${O.halfOnlyMulti!==false?"checked":""}> Half hour only for bookings of 2+ hours</label>
     <label class="onsw" style="align-self:end"><input type="checkbox" data-on="noEarlyRefund" ${O.noEarlyRefund!==false?"checked":""}> Bookings of 2+ hours: no refund after the free window</label></div>
     <p class="lnote">After each hour: the free minutes cost nothing, up to the half-hour limit is charged half an hour, after that a full hour (e.g. 10 / 35: 1:10 = 1 h, 1:35 = 1½ h, 1:36 = 2 h).</p>
     <p class="lnote">Changes apply to new orders only; confirmed orders keep the prices they were sold at.</p></div>
@@ -1829,6 +1888,9 @@ document.addEventListener("click",e=>{
   if(x=c("[data-pickup]")) return confirmPickup(x.dataset.pickup);
   if(x=c("[data-pickall]")) return confirmPickupAll(x.dataset.pickall);
   if(x=c("[data-ret]")) return openReturn(x.dataset.ret);
+  if(x=c("[data-retall]")) return openReturnAll(x.dataset.retall);
+  if(x=c("[data-racond]")){ const r=PALL.rows[+x.dataset.racond]; r.cond=r.cond==="maint"?"ok":"maint"; if(r.cond==="ok") r.issue=null; return drawReturnAll(); }
+  if(x=c("[data-raissue]")){ const [i,v]=x.dataset.raissue.split("|"); PALL.rows[+i].issue=v; return drawReturnAll(); }
   if(x=c("[data-swapride]")) return openSwap(x.dataset.swapride);
   if(x=c("[data-cancel]")) return openCancel(x.dataset.cancel);
   if(x=c("[data-pickcode]")){ pending.newCode=x.dataset.pickcode; return drawSwap(); }
@@ -1840,7 +1902,12 @@ document.addEventListener("click",e=>{
   if(x=c("[data-refund]")) return openRefund(x.dataset.refund);
   if(x=c("[data-spm]")){ SP.method=x.dataset.spm; return addSettlePay(); }
   if(c("[data-sadd]")) return addSettlePay();
-  if(x=c("[data-srm]")){ SP.lines.splice(+x.dataset.srm,1); return drawSettle(); }
+  if(c("[data-discopen]")){ if(isOwner()){ SP.discBy=(isOwnerEmail(CURUSER&&CURUSER.email)?CURUSER.email:ELEV.email); SP.discStep="form"; } else SP.discStep="auth"; return drawDisc(); }
+  if(c("[data-disccancel]")){ SP.discStep=null; return drawDisc(); }
+  if(c("[data-discauth]")) return discAuth();
+  if(c("[data-discapply]")) return discApply();
+  if(c("[data-discdel]")){ SP.disc=null; SP.due=SP.gross; return (drawDisc(),drawSettle()); }
+  if(x=c("[data-srm]")){ SP.lines.splice(+x.dataset.srm,1); drawSettle(); return drawDisc(); }
   // orders / maintenance / report / settings
   if(x=c("[data-orange]")){ OR.range=x.dataset.orange; return renderOrders(); }
   if(x=c("[data-fix]")){ const u=unit(x.dataset.fix); u.st="free"; u.issue=null; syncUnits(bikeById(u.bikeId)); persist("units"); refreshAll(); return toast(`${u.code} back in service.`); }
@@ -1863,7 +1930,7 @@ document.addEventListener("click",e=>{
     SETDIRTY=true; const card=document.querySelector(`[data-cof="${id}"]`); card.querySelector('[data-cf="name"]').focus(); return; }
   if(x=c("[data-codel]")){ const card=document.querySelector(`[data-cof="${x.dataset.codel}"]`); if(card&&confirm("Delete this offer? Orders already paid keep their prices.")){ card.remove(); SETDIRTY=true; toast("Press Save all to delete it for every desk."); } return; }
     if(c("[data-savesettings]")) return saveSettings();
-  if(x=c("[data-act]")){ const a=x.dataset.act; ({close:()=>$("dlg").close(),doreturn:doReturn,doswap:doSwap,docancel:doCancel,dosettle:doSettle,dorefund:doRefund}[a]||(()=>{}))(); }
+  if(x=c("[data-act]")){ const a=x.dataset.act; ({close:()=>$("dlg").close(),doreturn:doReturn,doreturnall:doReturnAll,doswap:doSwap,docancel:doCancel,dosettle:doSettle,dorefund:doRefund}[a]||(()=>{}))(); }
 });
 $("dlg").addEventListener("close",()=>$("dlg").classList.remove("wide"));
 $("backupNow").onclick=()=>backupNow();
