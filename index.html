@@ -213,7 +213,7 @@ dialog.wide{max-width:760px}
 .rc-h{text-align:center}.rc-h b{font-size:17px}.rc-h small{display:block}
 .rc-t{text-align:center;font-weight:700;margin:10px 0;letter-spacing:.5px}
 .rc-kv{display:flex;justify-content:space-between;gap:8px}.rc-kv.tot{font-weight:700;font-size:15px;margin:2px 0}
-.rc-item{display:flex;justify-content:space-between;gap:8px;margin:3px 0}.rc-item small{display:block;color:#555}
+.rc-item{display:flex;justify-content:space-between;gap:8px;margin:3px 0;font-weight:700}.rc-item small{display:block;color:#555;font-weight:400}
 .rc-rule{border-top:1px dashed #999;margin:8px 0}
 .rc-f{text-align:center;font-size:11px;margin-top:6px}
 /* invoice (A4) */
@@ -1283,31 +1283,36 @@ function openSettle(id){
     <div id="discBox"></div><div id="settlePay"></div><div class="acts"><button data-act="close">Cancel</button><button class="primary" data-act="dosettle">Post invoice</button></div>`;
   drawDisc(); drawSettle(); $("dlg").showModal();
 }
-// Special discount on the final invoice: granted by the owner only (signed in, or approved with the owner's password on this desk).
+const keyHash=async k=>{ const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode("ghostbike-disc:"+k)); return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,"0")).join(""); };
+async function setDiscKey(){ const a=$("dkNew").value, b=$("dkRep").value;
+  if(a.length<4) return toast("The passkey needs at least 4 characters."); if(a!==b) return toast("The two passkeys are different.");
+  const AC=adminCloud(); if(!AC||!isOwner()) return toast("Only the owner can set the passkey.");
+  const h=await keyHash(a);
+  try{ const sv=await withTimeout(AC.txn(async t=>{ const v=(await t.get("config","settings"))||clean(SET); v.discKeyHash=h; v.rev=(v.rev||0)+1; t.set("config","settings",clean(v)); return v; }),15000);
+    MY_SET_REV=sv.rev; SET.discKeyHash=h; toast("Passkey set. It works on every desk now."); renderSettings(); }
+  catch(e){ toast("Could not save the passkey: "+(e.code||e.message)); } }
+// Special discount on the final invoice: applied with the passkey (or directly by the owner) (signed in, or approved with the owner's password on this desk).
 function drawDisc(){ const b=$("discBox"); if(!b) return; const d=SP.disc;
-  if(d&&d.amt>0){ b.innerHTML=`<div class="kv" style="color:var(--go)"><span>Special discount${d.pct?` ${d.pct}%`:""} · ${esc(d.reason||"")} <small class="muted">by ${esc(d.by.split("@")[0])}</small></span><span class="num">−${f(d.amt)}</span></div>
+  if(d&&d.amt>0){ b.innerHTML=`<div class="kv" style="color:var(--go)"><span>Special discount${d.pct?` ${d.pct}%`:""} · ${esc(d.reason||"")} <small class="muted">${d.via==="passkey"?"passkey · ":""}by ${esc(d.by.split("@")[0])}</small></span><span class="num">−${f(d.amt)}</span></div>
       <div class="kv"><span><b>Due after discount</b></span><span class="num"><b>${f(SP.due)}</b></span></div>${SP.lines.length?"":`<div class="btnrow" style="margin:4px 0"><button class="btn" data-discdel>Remove discount</button></div>`}`; return; }
-  if(SP.discStep==="auth"){ b.innerHTML=`<div class="spanel" style="margin:10px 0;padding:12px"><b>Owner approval</b><div class="meta">Only the owner can grant a special discount.</div>
-      <label class="flabel" for="dEmail">Owner email</label><input id="dEmail" class="finput" type="email" autocomplete="off" value="${esc(OWNER_EMAILS[0])}">
-      <label class="flabel" for="dPass">Password</label><input id="dPass" class="finput" type="password" autocomplete="off"><div class="fmsg" id="dMsg"></div>
-      <div class="btnrow"><button class="btn" data-disccancel>Cancel</button><button class="btn pri" data-discauth>Approve</button></div></div>`; setTimeout(()=>$("dPass")&&$("dPass").focus(),30); return; }
-  if(SP.discStep==="form"){ b.innerHTML=`<div class="spanel" style="margin:10px 0;padding:12px"><b>Special discount</b> <small class="muted">approved by ${esc(SP.discBy.split("@")[0])}</small>
+  if(SP.discStep==="auth"){ b.innerHTML=`<div class="spanel" style="margin:10px 0;padding:12px"><b>Discount passkey</b><div class="meta">${SET.discKeyHash?"Enter the passkey to give a special discount.":"No passkey is set yet. The owner sets it in Settings."}</div>
+      <label class="flabel" for="dPass">Passkey</label><input id="dPass" class="finput" type="password" autocomplete="off"><div class="fmsg" id="dMsg"></div>
+      <div class="btnrow"><button class="btn" data-disccancel>Cancel</button><button class="btn pri" data-discauth ${SET.discKeyHash?"":"disabled"}>Apply passkey</button></div></div>`; setTimeout(()=>$("dPass")&&$("dPass").focus(),30); return; }
+  if(SP.discStep==="form"){ b.innerHTML=`<div class="spanel" style="margin:10px 0;padding:12px"><b>Special discount</b> <small class="muted">${SP.discVia==="passkey"?"passkey accepted":"by "+esc(SP.discBy.split("@")[0])}</small>
       <div class="sgrid"><label>Type<select id="dType"><option value="amt">Amount KWD</option><option value="pct">Percent %</option></select></label>
       <label>Value<input id="dVal" class="num" inputmode="decimal"></label><label>Reason<input id="dWhy" placeholder="e.g. loyal customer"></label></div>
       <div class="btnrow"><button class="btn" data-disccancel>Cancel</button><button class="btn pri" data-discapply>Apply discount</button></div></div>`; return; }
-  b.innerHTML=SP.lines.length||SP.gross<0.0005?"":`<div class="btnrow" style="margin:8px 0 0"><button class="btn" data-discopen>Special discount (owner)</button></div>`; }
-async function discAuth(){ const em=$("dEmail").value.trim(), pw=$("dPass").value; $("dMsg").textContent="";
-  if(!isOwnerEmail(em)){ $("dMsg").innerHTML='<span class="bad">Only the owner can grant a special discount.</span>'; return; }
-  const btn=document.querySelector("[data-discauth]"); btn.disabled=true; btn.textContent="Checking…";
-  try{ const cl=await withTimeout(CLOUD.elevate(em,pw),15000); try{ cl.close&&cl.close(); }catch(e){}
-    SP.discBy=cl.email||em; SP.discStep="form"; drawDisc(); }
-  catch(err){ $("dMsg").innerHTML=`<span class="bad">${esc(UNLOCK_ERR[err.code]||err.message)}</span>`; btn.disabled=false; btn.textContent="Approve"; } }
+  b.innerHTML=SP.lines.length||SP.gross<0.0005?"":`<div class="btnrow" style="margin:8px 0 0"><button class="btn" data-discopen>Special discount</button></div>`; }
+async function discAuth(){ const k=$("dPass").value; $("dMsg").textContent="";
+  if(!SET.discKeyHash) return; if(!k){ $("dMsg").innerHTML='<span class="bad">Enter the passkey.</span>'; return; }
+  if(await keyHash(k)!==SET.discKeyHash){ $("dMsg").innerHTML='<span class="bad">Wrong passkey.</span>'; $("dPass").value=""; return; }
+  SP.discBy=(CURUSER&&CURUSER.email)||""; SP.discVia="passkey"; SP.discStep="form"; drawDisc(); }
 function discApply(){ const t=$("dType").value, v=parseAmt($("dVal").value), why=$("dWhy").value.trim();
   if(!(v>0)) return toast("Enter the discount value.");
   if(t==="pct"&&v>100) return toast("A percentage can't be more than 100.");
   if(!why) return toast("Enter the reason for the discount.");
   const amt=r3(Math.min(SP.gross,t==="pct"?SP.gross*v/100:v));
-  SP.disc={amt,pct:t==="pct"?v:null,reason:why,by:SP.discBy}; SP.due=r3(SP.gross-amt); SP.discStep=null; drawDisc(); drawSettle(); }
+  SP.disc={amt,pct:t==="pct"?v:null,reason:why,by:SP.discBy,via:SP.discVia||"owner"}; SP.due=r3(SP.gross-amt); SP.discStep=null; drawDisc(); drawSettle(); }
 function drawSettle(){
   const paid=SP.lines.reduce((a,l)=>a+l.amt,0), left=r3(SP.due-paid);
   $("settlePay").innerHTML=`${left>0.0005?`<div class="amtrow" style="margin-top:12px"><label for="samt">Amount to take</label><input id="samt" class="num" inputmode="decimal" value="${f(left)}" aria-label="Amount to take"></div>
@@ -1329,7 +1334,7 @@ async function doSettle(){
   const no=numFmt("inv",(await allocNos({inv:1})).inv); BUSY=false;
   const o=ORDERS.find(x=>x.id===SP.id);
   const inv=newInvoice(no,o,"Extra hours",SP.codes,SP.due,SP.lines,l=>({code:l.code,name:l.name,desc:`${fmtH(l.H)} used · ${paidOf(l)===1?"1st hour":paidOf(l)+" h"} paid in advance`,amt:l.extra}));
-  if(SP.disc&&SP.disc.amt>0){ inv.items.push({code:"",name:"Special discount",desc:`${SP.disc.pct?SP.disc.pct+"% · ":""}${SP.disc.reason} · granted by ${SP.disc.by.split("@")[0]}`,amt:-SP.disc.amt,disc:true}); inv.disc={...SP.disc}; }
+  if(SP.disc&&SP.disc.amt>0){ inv.items.push({code:"",name:"Special discount",desc:`${SP.disc.pct?SP.disc.pct+"% · ":""}${SP.disc.reason} · ${SP.disc.via==="passkey"?"passkey · applied by":"granted by"} ${SP.disc.by.split("@")[0]}`,amt:-SP.disc.amt,disc:true}); inv.disc={...SP.disc}; }
   SP.codes.forEach(c=>{const l=o.lines.find(x=>x.code===c); l.state="closed"; l.inv=inv.no; delete l.pick_sel;});
   o.lines.forEach(l=>{ if(l.state==="toSettle") l.pick_sel=true; });   // remaining bikes ready for the next settlement
   persistOrder(o); refreshAll(); openDocs(o.id,inv.no);
@@ -1379,7 +1384,7 @@ function invoiceHTML(o,inv){
   return `<div class="a4"><div class="a4-h"><div><b>${esc(C.name)}</b> <span>${esc(C.ar)}</span><div class="muted">${esc(C.line)}</div>${C.phone?`<div class="muted">Tel · هاتف ${esc(C.phone)}</div>`:""}</div><div class="a4-t">${cr?"Credit Note":"Invoice"}<div class="muted">${cr?"إشعار دائن":"فاتورة"}</div><div class="muted" style="font-size:12px">Provisional (pilot)</div></div></div>
     <div class="a4-meta"><div><small>Bill to</small><b>${esc(o.who)}</b><div>${fmtPhone(o.phone)}</div></div><div><small>Number</small><b>${inv.no}</b><small>Date</small><b>${dt(inv.at)}</b><small>Source</small><b>${o.id}</b></div></div>
     <table class="a4-tb"><tr><th>Bike</th><th>Description</th><th class="r">Amount KWD</th></tr>
-    ${inv.items.map(i=>`<tr><td><b>${i.code}</b> ${esc(i.name)}</td><td>${esc(i.desc)}</td><td class="r">${f(i.amt)}</td></tr>`).join("")}
+    ${inv.items.map(i=>`<tr style="font-weight:700"><td><b>${i.code}</b> ${esc(i.name)}</td><td style="font-weight:400">${esc(i.desc)}</td><td class="r">${f(i.amt)}</td></tr>`).join("")}
     <tr class="t"><td></td><td>Total</td><td class="r">${f(inv.amount)}</td></tr><tr><td></td><td>${cr?"Refunded in cash":"Paid"} (${[...new Set(inv.pays.map(p=>p.m))].join(" + ")||"—"})</td><td class="r">${f(paid)}</td></tr>
     <tr class="t"><td></td><td>Amount due</td><td class="r">${f(inv.amount-paid)}</td></tr></table>
     <p class="muted" style="font-size:12px;margin-top:24px">Rental order ${o.id}. Provisional document issued during the pilot; the official invoice is issued in Odoo.</p></div>`;
@@ -1707,7 +1712,12 @@ function renderSettings(){
     <label>Journal (code or name)<input data-a="journal" value="${esc(A.journal||"")}" placeholder="e.g. MISC"></label>
     <label>Rental revenue account code<input data-a="revenue" value="${esc(A.revenue||"")}"></label>
     ${SET.methods.map(m=>`<label>${esc(m)} account code<input data-a="${esc(m)}" value="${esc(A[m]||"")}"></label>`).join("")}</div></div>
-  <div class="spanel"><h3>Managers</h3><p>Settings: <b>${ADMIN_EMAILS.join(", ")}</b>. Day report and sales totals (confidential): <b>${OWNER_EMAILS.join(", ")}</b> only.</p>
+  <div class="spanel"><h3>Special discount passkey</h3>
+    <p>${SET.discKeyHash?"A passkey is set. Staff enter it to give a special discount on the final invoice.":"<b>No passkey set yet</b>: staff can't give special discounts until you set one."}</p>
+    <div class="sgrid"><label>New passkey<input id="dkNew" type="password" autocomplete="new-password"></label><label>Repeat passkey<input id="dkRep" type="password" autocomplete="new-password"></label></div>
+    <div class="btnrow"><button class="btn pri" data-setkey>Set passkey</button></div>
+    <p class="lnote">Changing it cancels the old passkey on every desk straight away. At least 4 characters.</p></div>
+  <div class="spanel"><h3>Managers</h3><p>Settings, Day report and sales totals: <b>${OWNER_EMAILS.join(", ")}</b> only.</p>
     <p class="lnote">To add or remove a manager, ask support: the list is also set in the Firebase security rules.</p></div>
   <div class="spanel"><h3>Backups</h3>
     <p>Backup folder: <b>${META.folderName?esc(META.folderName):"not set (files go to Downloads)"}</b> · last backup: <b>${META.lastBackup?dt(META.lastBackup):"never"}</b> · browser storage permanent: <b>${META.persisted?"yes":"not confirmed"}</b></p>
@@ -1791,7 +1801,7 @@ let VIEW="new";
 let SETDIRTY=false;
 function showView(v){
   if(v==="report"&&!isOwner()) return openUnlock(v);
-  if(v==="settings"&&!isAdmin()) return openUnlock(v);
+  if(v==="settings"&&!isOwner()) return openUnlock(v);
   if(VIEW==="settings"&&v!=="settings"&&SETDIRTY){ if(confirm("You have unsaved changes in Settings. Save them now?")) saveSettings(); SETDIRTY=false; }
   VIEW=v; document.querySelectorAll("[data-view]").forEach(b=>b.setAttribute("aria-selected",b.dataset.view===v));
   $("newView").style.display=v==="new"?"":"none"; $("draftBar").style.display=v==="new"?"":"none";
@@ -1802,15 +1812,15 @@ function showView(v){
 const UNLOCK_ERR={"auth/invalid-credential":"Wrong email or password.","auth/wrong-password":"Wrong email or password.","auth/user-not-found":"Wrong email or password.",
   "auth/too-many-requests":"Too many attempts. Wait a minute and try again.","auth/network-request-failed":"No internet connection. Unlocking needs internet."};
 function openUnlock(v){
-  const name=v==="report"?"Day report":"Settings", own=v==="report";
-  $("dlgBody").innerHTML=`<h3>🔒 ${name} · ${own?"owner only":"manager only"}</h3><div class="meta">${own?"Sales figures are confidential: only the owner can open it.":"A manager signs in to open it on this desk."} It locks again when you leave it or after ${MGR_MIN} idle minutes.</div>
+  const name=v==="report"?"Day report":"Settings", own=true;
+  $("dlgBody").innerHTML=`<h3>🔒 ${name} · ${own?"owner only":"manager only"}</h3><div class="meta">${v==="report"?"Sales figures are confidential: only the owner can open it.":"Only the owner can open Settings."} It locks again when you leave it or after ${MGR_MIN} idle minutes.</div>
     <form id="unlockForm"><label class="flabel" for="ulEmail">Manager email</label><input id="ulEmail" class="finput" type="email" autocomplete="off" required>
     <label class="flabel" for="ulPass">Password</label><input id="ulPass" class="finput" type="password" autocomplete="off" required>
     <div class="fmsg" id="ulMsg"></div>
     <div class="acts"><button type="button" data-act="close">Cancel</button><button type="submit" class="primary" id="ulBtn">Unlock ${name}</button></div></form>`;
   $("dlg").showModal(); setTimeout(()=>$("ulEmail").focus(),50);
   $("unlockForm").onsubmit=async e=>{ e.preventDefault(); const em=$("ulEmail").value.trim(), pw=$("ulPass").value; $("ulMsg").textContent="";
-    if(own?!isOwnerEmail(em):!isAdminEmail(em)){ $("ulMsg").innerHTML=`<span class="bad">${own?"Only the owner can open the Day report.":"This login is not a manager."}</span>`; return; }
+    if(own?!isOwnerEmail(em):!isAdminEmail(em)){ $("ulMsg").innerHTML=`<span class="bad">Only the owner can open the ${name}.</span>`; return; }
     $("ulBtn").disabled=true; $("ulBtn").textContent="Checking…";
     try{ const cl=await withTimeout(CLOUD.elevate(em,pw),15000);
       ELEV={email:cl.email||em,cloud:cl,until:NOW()+MGR_MIN*60e3,unwatch:watchDays(cl)};
@@ -1832,7 +1842,7 @@ function render(){ renderNew(); }
 let REPORT_DIRTY=false;
 function refreshAll(){ renderNew(); renderBoard(); renderSettle(); renderMaint(); if(VIEW==="orders") renderOrders(); if(VIEW==="report"&&!REPORT_DIRTY) renderReport(); if(VIEW==="settings"&&!SETDIRTY) renderSettings();
   $("ordCount").textContent=DRAFTS.length?DRAFTS.length:""; $("brandName").textContent=SET.company.name;
-  document.querySelectorAll('[data-view="settings"]').forEach(t=>t.classList.toggle("locked",!isAdmin()));
+  document.querySelectorAll('[data-view="settings"]').forEach(t=>t.classList.toggle("locked",!isOwner()));
   document.querySelectorAll('[data-view="report"]').forEach(t=>t.classList.toggle("locked",!isOwner()));
   $("mgrLbl").innerHTML=ELEV?`<button class="bkbtn mgr" data-lockmgr title="Lock manager screens now">🔓 ${esc(ELEV.email.split("@")[0])} · Lock</button>`:"";
   $("todayLbl").textContent=`${DAYS[todayDow()]}${SET.testDay!==""?" (test)":""}`; }
@@ -1902,7 +1912,8 @@ document.addEventListener("click",e=>{
   if(x=c("[data-refund]")) return openRefund(x.dataset.refund);
   if(x=c("[data-spm]")){ SP.method=x.dataset.spm; return addSettlePay(); }
   if(c("[data-sadd]")) return addSettlePay();
-  if(c("[data-discopen]")){ if(isOwner()){ SP.discBy=(isOwnerEmail(CURUSER&&CURUSER.email)?CURUSER.email:ELEV.email); SP.discStep="form"; } else SP.discStep="auth"; return drawDisc(); }
+  if(c("[data-discopen]")){ if(isOwner()){ SP.discBy=(isOwnerEmail(CURUSER&&CURUSER.email)?CURUSER.email:ELEV.email); SP.discVia="owner"; SP.discStep="form"; } else SP.discStep="auth"; return drawDisc(); }
+  if(c("[data-setkey]")) return setDiscKey();
   if(c("[data-disccancel]")){ SP.discStep=null; return drawDisc(); }
   if(c("[data-discauth]")) return discAuth();
   if(c("[data-discapply]")) return discApply();
