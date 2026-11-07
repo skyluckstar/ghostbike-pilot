@@ -612,7 +612,7 @@ const signedInAdmin=()=>isAdminEmail(CURUSER&&CURUSER.email);
 let ELEV=null;                       // a manager unlocked the manager screens on a staff desk
 const isAdmin=()=>signedInAdmin()||!!ELEV;
 // Owner: the only login that sees sales figures (Day report and order totals). Settings stay with all managers.
-const OWNER_EMAILS=["feras.kastero@hotmail.com"];
+const OWNER_EMAILS=["feras.kastero@hotmail.com","ma.handlle@outlook.com"];
 const isOwnerEmail=e=>!!e&&OWNER_EMAILS.includes(String(e).trim().toLowerCase());
 const isOwner=()=>isOwnerEmail(CURUSER&&CURUSER.email)||!!(ELEV&&isOwnerEmail(ELEV.email));
 const adminCloud=()=>signedInAdmin()?CLOUD:(ELEV&&ELEV.cloud);
@@ -794,8 +794,10 @@ function keyRate(o,l,k){ const p=o.p; return k==="nbk"?l.rate*(1-p.nbkPct/100):k
 // Client's own offers (Settings → Offers): a fixed price per hour on chosen bikes, selected by staff. The cheapest price wins; free first hour stays first.
 const coOf=(o,k)=>(o.co||[]).find(c=>"co:"+c.id===k);
 function lineKey(o,l){ const k=baseKey(o,l); if(k==="sn"||k==="ly") return k;
-  let best=null; (o.co||[]).forEach(c=>{ const pr=c.prices&&c.prices[l.bikeId]; if(pr==null||pr==="") return; if(!best||+pr<best.p) best={id:c.id,p:+pr}; });
-  return best&&best.p<keyRate(o,l,k)-1e-9?"co:"+best.id:k; }
+  let best=null; (o.co||[]).forEach(c=>{ const pr=c.prices&&c.prices[l.bikeId]; if(pr==null||pr===""||(c.menOnly&&l.noCo)) return; if(!best||+pr<best.p) best={id:c.id,p:+pr}; });
+  if(!best) return k;
+  if(!(o.co||[]).some(c=>c.v2)) return best.p<keyRate(o,l,k)-1e-9?"co:"+best.id:k;   // orders sold before v35 keep the old rule
+  return k==="nbk"&&keyRate(o,l,k)<best.p-1e-9?k:"co:"+best.id; }
 function priceFor(o,l,H){
   const p=o.p, k=lineKey(o,l);
   switch(k){
@@ -813,16 +815,19 @@ function offerDetail(k,p){ if(k&&k.startsWith("co:")) return "Special price on s
   mon:`${f(p.monPrice)} KWD/hour on selected bikes`,wed:`${f(p.wedPrice)} KWD/hour on selected bikes + free coffee`,none:"No offer applies"}[k];}
 // pseudo-order from the ticket on screen
 const activeCO=()=>(SET.customOffers||[]).filter(c=>c.active);
-const chosenCO=()=>activeCO().filter(c=>(S.co||[]).includes(c.id)).map(c=>({id:c.id,name:c.name,ar:c.ar||"",prices:{...c.prices}}));
+const chosenCO=()=>activeCO().filter(c=>(S.co||[]).includes(c.id)).map(c=>({id:c.id,name:c.name,ar:c.ar||"",prices:{...c.prices},coffee:!!c.coffee,menOnly:!!c.menOnly,v2:1}));
 function ticketCtx(){return {nbk:S.nbk,dow:todayDow(),dayOffer:S.dayOffer,p:SET.offers,co:chosenCO()};}
 // Sunday/Wednesday: a chip on each bike shows who gets the day offer. Tap it on a bike ridden by someone who doesn't qualify.
 const sunMulti=()=>todayDow()===0&&S.sel.length>1&&!S.dayOffer&&SET.offers.sunOn!==false;   // Sunday group, customer not a man: tick each man's bike
 function dayChip(code,b){ const dow=todayDow(); if(!(dow===0||(dow===3&&b.wed))) return ""; if((dow===0&&SET.offers.sunOn===false)||(dow===3&&SET.offers.wedOn===false)) return ""; if(!S.dayOffer&&!(dow===0&&sunMulti())) return "";
   const on=S.dayOffer?!(S.dayOff||[]).includes(code):(S.dayOn||[]).includes(code), sym=dow===0?"♂ Man":"♀ Lady";
   return `<button class="snchip daychip" data-daycode="${code}" aria-pressed="${on}" title="${dow===0?"Sunday men's":"Wednesday ladies"} offer on this bike">${sym}</button>`; }
-function ticketLine(code,i){const u=unit(code),b=bikeById(u.bikeId);return {code,bikeId:b.id,name:b.name,rate:b.rate,mon:b.mon,wed:b.wed,sn:S.sn&&(S.snCodes||[]).includes(code),ly:S.ly&&(S.lyCodes||[]).includes(code),day:S.dayOffer?!(S.dayOff||[]).includes(code):(sunMulti()&&(S.dayOn||[]).includes(code))};}
+function ticketLine(code,i){const u=unit(code),b=bikeById(u.bikeId);return {code,bikeId:b.id,name:b.name,rate:b.rate,mon:b.mon,wed:b.wed,sn:S.sn&&(S.snCodes||[]).includes(code),ly:S.ly&&(S.lyCodes||[]).includes(code),day:S.dayOffer?!(S.dayOff||[]).includes(code):(sunMulti()&&(S.dayOn||[]).includes(code)),noCo:S.sel.length>1&&(S.coOff||[]).includes(code)};}
+// Men-only offer, 2+ bikes: a ♂ mark on each bike in the offer; tap it off on a bike not ridden by a man
+function coChip(code,b){ if(S.sel.length<2) return ""; const cs=chosenCO().filter(c=>c.menOnly&&c.prices[b.id]!=null&&c.prices[b.id]!==""); if(!cs.length) return "";
+  return `<button class="snchip daychip" data-cooff="${code}" aria-pressed="${!(S.coOff||[]).includes(code)}" title="${esc(cs.map(c=>c.name).join(", "))} on this bike (men only)">♂ Offer</button>`; }
 /* ================= 1 · NEW RENTAL ================= */
-const S={co:[],hours:1,ly:false,lyCodes:[],lyRef:"",sel:[],snCodes:[],dayOff:[],dayOn:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,q:"",cat:"Popular",draftId:null,
+const S={coOff:[],co:[],hours:1,ly:false,lyCodes:[],lyRef:"",sel:[],snCodes:[],dayOff:[],dayOn:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,q:"",cat:"Popular",draftId:null,
   pay:{mode:"single",method:"KNET",lines:[],rider:{}},pc:{}};
 const custById=id=>CUSTOMERS.find(c=>c.id===id);
 const qualifies=(g,dow)=>(dow===0&&g==="Male")||(dow===3&&g==="Female");
@@ -897,7 +902,7 @@ function renderNew(){
     :`Back within ${O_.graceMin} min: full refund; within ${O_.halfUpTo} min: half an hour is charged and the rest refunded. After each hour: ${O_.overFree} min free, up to ${O_.overHalf} min = half an hour, then a full hour.${O_.noEarlyRefund?` Bookings of 2 hours or more: no refund after ${O_.graceMin} min.`:""}`;
   const ACO=activeCO(); S.co=(S.co||[]).filter(id=>ACO.some(c=>c.id===id));
   $("coBox").innerHTML=ACO.map(c=>{ const ps=BIKES.filter(b=>c.prices[b.id]!=null&&c.prices[b.id]!=="").map(b=>`${esc(b.name)} ${f(+c.prices[b.id])}`);
-    return `<button class="toggle" data-co="${esc(c.id)}" aria-pressed="${S.co.includes(c.id)}"><span>${esc(c.name)}${c.ar?` <span class="ar">${esc(c.ar)}</span>`:""}<small>${ps.slice(0,3).join(" · ")}${ps.length>3?` · +${ps.length-3} more`:""}</small></span><span class="sw" aria-hidden="true"></span></button>`; }).join("");
+    return `<button class="toggle" data-co="${esc(c.id)}" aria-pressed="${S.co.includes(c.id)}"><span>${esc(c.name)}${c.ar?` <span class="ar">${esc(c.ar)}</span>`:""}<small>${ps.slice(0,3).join(" · ")}${ps.length>3?` · +${ps.length-3} more`:""}${c.coffee?" · + free coffee":""}${c.menOnly?" · men only (♂)":""}</small></span><span class="sw" aria-hidden="true"></span></button>`; }).join("");
   $("tLY").setAttribute("aria-pressed",S.ly); $("lyRef").hidden=!S.ly||O_.lyOn===false; if(document.activeElement!==$("lyRef")) $("lyRef").value=S.lyRef||"";
   $("tSN").setAttribute("aria-pressed",S.sn); $("tNBK").setAttribute("aria-pressed",S.nbk);
   $("nbkLbl").textContent=`${SET.offers.nbkPct}% off · check staff ID`;
@@ -941,7 +946,7 @@ function renderNew(){
     const gross=r3(b.rate*HR*cs.length), net=r3(cs.reduce((a,c)=>a+PC[c],0)); G+=gross; N+=net;
     const ks=[...new Set(lines.filter(l=>cs.includes(l.code)).map(l=>lineKey(ctx,l)))].filter(k=>k!=="none");
     html+=`<div class="line"><span class="lq"><span class="mini"><button data-b="${b.id}" data-d="-1" aria-label="Remove one ${esc(b.name)}">−</button><b class="num">${cs.length}</b><button data-b="${b.id}" data-d="1" ${cs.length>=freeCount(b.id)?"disabled":""} aria-label="Add one ${esc(b.name)}">+</button></span>${bikeIcon(b.icon,"bi sm")}${esc(b.name)}</span><span class="num">${f(net)}</span>
-      <span class="codes">${cs.map(c=>`<span class="codewrap"><button class="code num" data-swap="${c}" title="Swap for another free ${esc(b.name)}">${c}</button>${dayChip(c,b)}${S.sn?`<button class="snchip" data-sncode="${c}" aria-pressed="${S.snCodes.includes(c)}" title="Special needs rider on this bike">SN</button>`:""}${S.ly?`<button class="snchip" data-lycode="${c}" aria-pressed="${S.lyCodes.includes(c)}" title="Loyalty member on this bike">★ Loyal</button>`:""}</span>`).join("")}</span>
+      <span class="codes">${cs.map(c=>`<span class="codewrap"><button class="code num" data-swap="${c}" title="Swap for another free ${esc(b.name)}">${c}</button>${dayChip(c,b)}${coChip(c,b)}${S.sn?`<button class="snchip" data-sncode="${c}" aria-pressed="${S.snCodes.includes(c)}" title="Special needs rider on this bike">SN</button>`:""}${S.ly?`<button class="snchip" data-lycode="${c}" aria-pressed="${S.lyCodes.includes(c)}" title="Loyalty member on this bike">★ Loyal</button>`:""}</span>`).join("")}</span>
       <small>${HR===1?"1st hour":HR+" h"} × ${f(b.rate)}${ks.length?` · ${ks.map(k=>esc(offerName(k,ctx))).join(", ")}`:""}</small></div>`;
   });
   $("lines").innerHTML=html||`<div class="empty">Tap a bike or scan its code to start</div>`;
@@ -1042,7 +1047,7 @@ async function confirmOrder(){
   sel.forEach(code=>{ const u=unit(code); if(u){ u.st="held"; u.draft=null; } });
   persist("units");
   // Wednesday ladies offer: one free coffee voucher per bike on the offer (codes unique within the order)
-  { const A="ABCDEFGHJKLMNPQRSTUVWXYZ23456789", used=new Set(); o.lines.forEach(l=>{ if(lineKey(o,l)!=="wed") return; let v;
+  { const A="ABCDEFGHJKLMNPQRSTUVWXYZ23456789", used=new Set(); o.lines.forEach(l=>{ const k=lineKey(o,l); if(k!=="wed"&&!(k.startsWith("co:")&&(coOf(o,k)||{}).coffee)) return; let v;
       do{ v="CAFE-"; for(let i=0;i<6;i++) v+=A[Math.floor(Math.random()*A.length)]; }while(used.has(v)); used.add(v); l.voucher=v; }); }
   const pays=S.pay.mode==="riders"?o.lines.filter(l=>l.adv>0.0005).map(l=>({m:S.pay.rider[l.code],amt:l.adv})):S.pay.lines.map(p=>({...p}));
   { const free=adv<0.0005, full=l=>r3(l.rate*PH), why=l=>l.sn?"Special needs":l.ly?"Loyalty":"Offer";
@@ -1060,8 +1065,8 @@ async function confirmOrder(){
 /* ---------- held tickets ---------- */
 function hasContent(){return S.sel.length||S.pay.lines.length||S.custId||S.walkin;}
 function curWho(){const c=custById(S.custId);return c?c.name:S.walkin?"Walk-in":(digits($("phone").value)||"New customer");}
-function snap(){return {co:[...(S.co||[])],hours:S.hours,ly:S.ly,lyCodes:[...(S.lyCodes||[])],lyRef:S.lyRef||"",sel:[...S.sel],custId:S.custId,walkin:S.walkin,sn:S.sn,snCodes:[...(S.snCodes||[])],dayOff:[...(S.dayOff||[])],dayOn:[...(S.dayOn||[])],nbk:S.nbk,dayOffer:S.dayOffer,pay:JSON.parse(JSON.stringify(S.pay)),phone:$("phone").value,who:curWho(),at:NOW()};}
-function resetTicket(){Object.assign(S,{co:[],hours:1,ly:false,lyCodes:[],lyRef:"",sel:[],snCodes:[],dayOff:[],dayOn:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,draftId:null,pay:{mode:S.pay.mode,method:SET.methods[0],lines:[],rider:{}}});$("phone").value="";}
+function snap(){return {coOff:[...(S.coOff||[])],co:[...(S.co||[])],hours:S.hours,ly:S.ly,lyCodes:[...(S.lyCodes||[])],lyRef:S.lyRef||"",sel:[...S.sel],custId:S.custId,walkin:S.walkin,sn:S.sn,snCodes:[...(S.snCodes||[])],dayOff:[...(S.dayOff||[])],dayOn:[...(S.dayOn||[])],nbk:S.nbk,dayOffer:S.dayOffer,pay:JSON.parse(JSON.stringify(S.pay)),phone:$("phone").value,who:curWho(),at:NOW()};}
+function resetTicket(){Object.assign(S,{coOff:[],co:[],hours:1,ly:false,lyCodes:[],lyRef:"",sel:[],snCodes:[],dayOff:[],dayOn:[],custId:null,walkin:false,sn:false,nbk:false,dayOffer:false,draftId:null,pay:{mode:S.pay.mode,method:SET.methods[0],lines:[],rider:{}}});$("phone").value="";}
 async function holdCurrent(forceNew){
   if(hasContent()){
     const id=S.draftId||numFmt("draft",(await allocNos({draft:1})).draft);
@@ -1078,7 +1083,7 @@ async function resumeDraft(id){
   const d=DRAFTS.find(x=>x.id===id); if(!d) return;
   DRAFTS=DRAFTS.filter(x=>x.id!==id);
   d.sel.forEach(c=>{const u=unit(c); if(u&&u.st==="draft"&&(u.draft===id||!u.draft)){ u.st="free"; u.draft=null; }});
-  Object.assign(S,{co:d.co||[],hours:d.hours||1,ly:!!d.ly,lyCodes:d.lyCodes||[],lyRef:d.lyRef||"",sel:d.sel.filter(c=>unit(c)&&unit(c).st==="free"),custId:d.custId,walkin:d.walkin,sn:d.sn,snCodes:d.snCodes||[],dayOff:d.dayOff||[],dayOn:d.dayOn||[],nbk:d.nbk,dayOffer:d.dayOffer,pay:d.pay,draftId:id});
+  Object.assign(S,{coOff:d.coOff||[],co:d.co||[],hours:d.hours||1,ly:!!d.ly,lyCodes:d.lyCodes||[],lyRef:d.lyRef||"",sel:d.sel.filter(c=>unit(c)&&unit(c).st==="free"),custId:d.custId,walkin:d.walkin,sn:d.sn,snCodes:d.snCodes||[],dayOff:d.dayOff||[],dayOn:d.dayOn||[],nbk:d.nbk,dayOffer:d.dayOffer,pay:d.pay,draftId:id});
   $("phone").value=d.phone||""; persist("drafts","units");
   showView("new"); refreshAll(); toast(`${id} resumed where you left off.`);
 }
@@ -1660,7 +1665,9 @@ const onBox=(k,O)=>`<label class="onsw"><input type="checkbox" data-on="${k}" ${
 const coCard=c=>`<div class="spanel cocard" data-cof="${esc(c.id)}">
     <div class="sgrid"><label>Offer name<input data-cf="name" value="${esc(c.name||"")}" placeholder="e.g. Summer kids deal"></label>
       <label>Arabic name<input data-cf="ar" dir="rtl" value="${esc(c.ar||"")}"></label>
-      <label class="onsw" style="align-self:end"><input type="checkbox" data-cf="active" ${c.active?"checked":""}> Active (shown at the counter)</label></div>
+      <label class="onsw" style="align-self:end"><input type="checkbox" data-cf="active" ${c.active?"checked":""}> Active (shown at the counter)</label>
+      <label class="onsw" style="align-self:end"><input type="checkbox" data-cf="coffee" ${c.coffee?"checked":""}> Free coffee from Milo Cafe (one per bike)</label>
+      <label class="onsw" style="align-self:end"><input type="checkbox" data-cf="menOnly" ${c.menOnly?"checked":""}> Men only: ♂ mark on each bike (2+ bikes: tap it off on bikes not for men)</label></div>
     <div style="overflow-x:auto"><table class="stbl"><tr><th>Bike type</th><th>Normal KWD/h</th><th>Offer KWD/h</th></tr>
       ${BIKES.map(b=>`<tr><td>${esc(b.name)}${b.active?"":' <span class="muted">(inactive)</span>'}</td><td class="num">${f(b.rate)}</td><td><input class="n" data-cfp="${b.id}" inputmode="decimal" placeholder="—" value="${c.prices&&c.prices[b.id]!=null?c.prices[b.id]:""}"></td></tr>`).join("")}</table></div>
     <div class="btnrow"><button class="btn warn" data-codel="${esc(c.id)}">Delete offer</button></div></div>`;
@@ -1676,7 +1683,7 @@ function offersTabHTML(){ const O=SET.offers;
     </table></div>
     <p class="lnote">Switching an offer off hides it at the counter. Orders already paid keep their prices.</p></div>
   <div class="spanel"><h3>Your offers</h3>
-    <p class="lnote">Each offer is a special price per hour on the bikes you choose (leave a bike empty to exclude it). Active offers appear under Offers on New rental; staff tap them for the customers who qualify. If several prices fit a bike, the customer gets the cheapest. The price applies to every hour, including extra time.</p>
+    <p class="lnote">Each offer is a special price per hour on the bikes you choose (leave a bike empty to exclude it); it can be higher than the normal price, for example a bundle with a free coffee. Active offers appear under Offers on New rental; staff tap them for the customers who qualify. A selected offer replaces the normal and day prices on its bikes; with NBK or another offer, the customer gets the cheapest. The price applies to every hour, including extra time. Tick “Men only” to show a ♂ mark on each bike for groups of 2+ bikes, so staff can leave out bikes not ridden by men.</p>
     <div id="coList">${(SET.customOffers||[]).map(coCard).join("")||'<p class="muted" id="coEmpty">No offers yet.</p>'}</div>
     <div class="btnrow"><button class="btn" data-coadd>+ Add offer</button><button class="btn pri" data-savesettings>Save all</button></div></div>`; }
 function renderSettings(){
@@ -1754,7 +1761,7 @@ function collectChanges(){
   document.querySelectorAll("[data-on]").forEach(i=>{ if(changed(i)) sc.push([["offers",i.dataset.on],i.checked]); });
   if($("coList")){ const list=[...document.querySelectorAll("[data-cof]")].map(card=>{ const g=k=>card.querySelector(`[data-cf="${k}"]`); const prices={};
       card.querySelectorAll("[data-cfp]").forEach(i=>{ const v=String(i.value).trim(); if(v==="") return; const n=parseAmt(v); if(!(n>=0)) err=`Offer “${g("name").value.trim()||"new offer"}”: check the price for ${(bikeById(i.dataset.cfp)||{}).name}.`; else prices[i.dataset.cfp]=r3(n); });
-      const o={id:card.dataset.cof,name:g("name").value.trim(),ar:g("ar").value.trim(),active:g("active").checked,prices};
+      const o={id:card.dataset.cof,name:g("name").value.trim(),ar:g("ar").value.trim(),active:g("active").checked,prices}; if(g("coffee").checked) o.coffee=true; if(g("menOnly").checked) o.menOnly=true;
       if(!o.name) err="Every offer needs a name."; else if(o.active&&!Object.keys(prices).length) err=`Offer “${o.name}”: enter a price for at least one bike, or switch it off.`;
       return o; });
     if(JSON.stringify(list)!==JSON.stringify(clean(SET.customOffers||[]))) sc.push([["customOffers"],list]); }
@@ -1857,13 +1864,14 @@ document.addEventListener("click",e=>{
   // new rental
   if(x=c("[data-b]")) return addOrRemove(x.dataset.b,Number(x.dataset.d));
   if(x=c("[data-add]")) return addOrRemove(x.dataset.add,1);
-  if(x=c("[data-swap]")){ const u=unit(x.dataset.swap), nx=nextFree(u.bikeId); if(nx){S.sel[S.sel.indexOf(u.code)]=nx.code; S.snCodes=(S.snCodes||[]).map(v=>v===u.code?nx.code:v); S.lyCodes=(S.lyCodes||[]).map(v=>v===u.code?nx.code:v); S.dayOff=(S.dayOff||[]).map(v=>v===u.code?nx.code:v); S.dayOn=(S.dayOn||[]).map(v=>v===u.code?nx.code:v); render();toast(`${u.code} swapped for ${nx.code}`);} else toast("No other free bike of this type."); return; }
+  if(x=c("[data-swap]")){ const u=unit(x.dataset.swap), nx=nextFree(u.bikeId); if(nx){S.sel[S.sel.indexOf(u.code)]=nx.code; S.snCodes=(S.snCodes||[]).map(v=>v===u.code?nx.code:v); S.lyCodes=(S.lyCodes||[]).map(v=>v===u.code?nx.code:v); S.dayOff=(S.dayOff||[]).map(v=>v===u.code?nx.code:v); S.dayOn=(S.dayOn||[]).map(v=>v===u.code?nx.code:v); S.coOff=(S.coOff||[]).map(v=>v===u.code?nx.code:v); render();toast(`${u.code} swapped for ${nx.code}`);} else toast("No other free bike of this type."); return; }
   if(x=c("[data-cat]")){ S.cat=x.dataset.cat; S.q=""; $("bq").value=""; return render(); }
   if(x=c("[data-cust]")) return selectCustomer(x.dataset.cust);
   if(c("[data-cust-clear]")){ S.custId=null; S.walkin=false; S.dayOffer=false; S.dayOn=[]; $("phone").value=""; render(); return $("phone").focus(); }
   if(c("[data-newcust]")) return openNewCustomer();
   if(c("[data-walkin]")){ S.walkin=true; S.custId=null; return render(); }
   if(c("#tDay")){ S.dayOffer=!S.dayOffer; S.dayOff=[]; S.dayOn=[]; return render(); }
+  if(x=c("[data-cooff]")){ const k=x.dataset.cooff; S.coOff=(S.coOff||[]).includes(k)?S.coOff.filter(v=>v!==k):[...(S.coOff||[]),k]; return render(); }
   if(x=c("[data-daycode]")){ const k=x.dataset.daycode;
     if(S.dayOffer) S.dayOff=(S.dayOff||[]).includes(k)?S.dayOff.filter(v=>v!==k):[...(S.dayOff||[]),k];
     else S.dayOn=(S.dayOn||[]).includes(k)?S.dayOn.filter(v=>v!==k):[...(S.dayOn||[]),k];
