@@ -362,6 +362,7 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
 .net{font-size:12px;font-weight:700;padding:3px 8px;border-radius:8px}
 .net.on{color:#8FE0B5}.net.off{background:var(--stop);color:#fff}
 #userLbl{color:#fff;font-weight:600}
+#brLbl{color:#fff;font-weight:700;background:#2E3B49;border-radius:8px;padding:4px 8px}#brLbl:empty{display:none}#brLbl select{padding:2px 4px}
 .codewrap{display:inline-flex;align-items:center;gap:2px}
 .lyref{width:100%;margin:-2px 0 8px;padding:9px 10px;border:1px solid var(--line);border-radius:10px;font-size:14px;background:var(--card);color:var(--ink)}
 [hidden]{display:none!important}
@@ -394,7 +395,7 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
     <button class="tab" role="tab" aria-selected="false" data-view="report">Day report</button>
     <button class="tab" role="tab" aria-selected="false" data-view="settings">Settings</button>
   </nav>
-  <div class="day"><span id="netLbl" class="net"></span><span id="todayLbl"></span><span id="userLbl"></span><span id="mgrLbl"></span><button class="bkbtn" id="backupNow" title="Save a backup now">Backup</button><button class="bkbtn" data-signout>Sign out</button></div>
+  <div class="day"><span id="netLbl" class="net"></span><span id="todayLbl"></span><span id="brLbl"></span><span id="userLbl"></span><span id="mgrLbl"></span><button class="bkbtn" id="backupNow" title="Save a backup now">Backup</button><button class="bkbtn" data-signout>Sign out</button></div>
 </header>
 <div id="banner" class="banner" hidden></div>
 
@@ -605,6 +606,25 @@ function firebaseCloud(cfg){
   };
 }
 let CLOUD=null;
+/* ---------- branches: each branch has its own orders, bikes, held tickets, day reports and numbers ----------
+   Main branch keeps the original collections; another branch uses "<collection>__<id>" (e.g. orders__sc).
+   Settings, prices, offers and customers are shared. Staff are tied to a branch in Settings → Branches. */
+let BR="main", ACCESS={users:{}}, BR_READY=false;
+const BRANCH_COLS=["orders","units","drafts","days"];
+const brList=()=>[{id:"main",code:"",...((SET&&SET.mainBranch)||{}),name:((SET&&SET.mainBranch&&SET.mainBranch.name)||"Main branch")},...((SET&&SET.branches)||[])];
+const brCur=()=>brList().find(b=>b.id===BR)||brList()[0];
+const multiBranch=()=>brList().length>1;
+const brPre=()=>BR==="main"?"":((brCur().code||BR.toUpperCase())+"-");
+function mapCol(c,i){ if(BR==="main") return [c,i]; if(BRANCH_COLS.includes(c)) return [c+"__"+BR,i]; if(c==="config"&&i==="counters") return [c,"counters__"+BR]; return [c,i]; }
+function wrapCloud(cl){ if(!cl||cl.__w) return cl; const w={...cl,__w:1};
+  w.watch=(c,cb,e)=>cl.watch(mapCol(c)[0],cb,e);
+  w.write=ops=>cl.write(ops.map(o=>{ const [c,i]=mapCol(o.col,o.id); return {...o,col:c,id:i}; }));
+  w.txn=fn=>cl.txn(t=>fn({get:(c,i)=>t.get(...mapCol(c,i)),set:(c,i,d)=>t.set(...mapCol(c,i),d),del:(c,i)=>t.del(...mapCol(c,i))}));
+  return w; }
+// Which branch this desk works in: staff → the branch their email is assigned to (else Main); managers → the branch they picked on this PC.
+function pickBranch(){ const ids=brList().map(b=>b.id), em=((CURUSER&&CURUSER.email)||"").toLowerCase();
+  const want=signedInAdmin()?META.branch:(ACCESS.users||{})[em]; return ids.includes(want)?want:"main"; }
+function switchBranch(id){ META.branch=id; saveMeta(); location.reload(); }
 // Managers: may open Day report and Settings and change prices, bikes and settings. Must match firestore.rules.
 const ADMIN_EMAILS=["feras.kastero@hotmail.com","ma.handlle@outlook.com"];
 const isAdminEmail=e=>!!e&&ADMIN_EMAILS.includes(String(e).trim().toLowerCase());
@@ -629,8 +649,8 @@ async function allocNos(want){
       for(const k in want){ out[k]=(c[k]||0)+1; c[k]=(c[k]||0)+want[k]; } t.set("config","counters",c); return out; }),20000);
   }catch(e){ const out={}; for(const k in want) out[k]=offlineNo(); return out; }
 }
-const numFmt=(k,n)=>typeof n==="number"?{order:`T-${pad(n,5)}`,inv:`PINV-${pad(n)}`,rinv:`PRINV-${pad(n)}`,draft:`D-${pad(n,3)}`}[k]
-  :{order:`T-${n}`,inv:`PINV-${n}`,rinv:`PRINV-${n}`,draft:`D-${n}`}[k];
+const numFmt=(k,n)=>brPre()+(typeof n==="number"?{order:`T-${pad(n,5)}`,inv:`PINV-${pad(n)}`,rinv:`PRINV-${pad(n)}`,draft:`D-${pad(n,3)}`}[k]
+  :{order:`T-${n}`,inv:`PINV-${n}`,rinv:`PRINV-${n}`,draft:`D-${n}`}[k]);
 
 /* ---------- saving: only what changed is sent ---------- */
 const BASE={units:{},customers:{},drafts:{},days:{},orders:{}};
@@ -648,6 +668,7 @@ function persist(...keys){
     else if(k==="days") Object.entries(DAYS_LOG).forEach(([d,v])=>{ const j=JSON.stringify(clean(v)); if(BASE.days[d]!==j){ aops.push({t:"set",col:"days",id:d,data:clean(v)}); BASE.days[d]=j; } });
     else if(k==="settings") aops.push({t:"set",col:"config",id:"settings",data:clean(SET)});
     else if(k==="bikes") aops.push({t:"set",col:"config",id:"bikes",data:{list:clean(BIKES)}});
+    else if(k==="access") aops.push({t:"set",col:"config",id:"access",data:clean(ACCESS)});
     else if(k==="meta") saveMeta();
   });
   send(ops);
@@ -702,16 +723,22 @@ document.addEventListener("focusout",()=>{ if(refreshWanted){ refreshWanted=fals
 function watchDays(cl){ return cl.watch("days",m=>{ DAYS_LOG={}; BASE.days={}; m.forEach((v,id)=>{DAYS_LOG[id]=v; BASE.days[id]=JSON.stringify(v);}); scheduleRefresh(); },
   e=>{ if(e&&e.code!=="permission-denied") toast("Cloud connection problem: "+(e.code||e.message)); }); }
 function startWatchers(){
-  const need=new Set(["config","units","customers","drafts","orders"]); let resolveReady; const ready=new Promise(r=>resolveReady=r);
+  const need=new Set(["config","units","customers","drafts","orders"]);
+  // this branch's orders, bikes and held tickets start once we know the branch
+  const startBranch=()=>startBranchCols(); let resolveReady; const ready=new Promise(r=>resolveReady=r);
   const done=c=>{ need.delete(c); if(!need.size) resolveReady(); };
   const err=e=>toast("Cloud connection problem: "+(e.code||e.message));
   CLOUD.watch("config",m=>{ let s=m.get("settings"), b=m.get("bikes");
     if(s&&(s.rev||0)<MY_SET_REV){ s=null; b=null; }          // an older copy arriving after our own save: keep ours
     if(s) SET={...DEFAULT_SETTINGS,...s,offers:{...DEFAULT_SETTINGS.offers,...s.offers},company:{...DEFAULT_SETTINGS.company,...s.company},accounts:{...DEFAULT_SETTINGS.accounts,...s.accounts}};
-    if(b) BIKES=b.list; COUNTERS=m.get("counters")||{};
+    if(b) BIKES=b.list; ACCESS=m.get("access")||{users:{}};
+    if(!BR_READY){ BR=pickBranch(); BR_READY=true; startBranch(); }
+    else if(pickBranch()!==BR){ toast("This desk's branch was changed in Settings. Reloading…"); setTimeout(()=>location.reload(),1500); }
+    COUNTERS=m.get(mapCol("config","counters")[1])||{};
     done("config"); scheduleRefresh(); },err);
   const listW=(col,set)=>CLOUD.watch(col,m=>{ const arr=[]; BASE[col]={}; m.forEach((v,id)=>{arr.push(v); BASE[col][id]=JSON.stringify(v);}); set(arr); done(col); scheduleRefresh(); },err);
-  listW("units",a=>UNITS=a); listW("customers",a=>CUSTOMERS=a); listW("drafts",a=>DRAFTS=a.sort((x,y)=>y.at-x.at));
+  listW("customers",a=>CUSTOMERS=a);
+  function startBranchCols(){ listW("units",a=>UNITS=a); listW("drafts",a=>DRAFTS=a.sort((x,y)=>y.at-x.at));
   if(signedInAdmin()) watchDays(CLOUD);
   CLOUD.watch("orders",m=>{
     LAST_ORD=m; const old=new Map(ORDERS.map(o=>[o.id,o])), next=[];
@@ -721,7 +748,7 @@ function startWatchers(){
       if(prev) v.lines.forEach((l,i)=>{ const pl=prev.lines[i]; if(pl&&pl.code===l.code&&pl.pick_sel!==undefined) l.pick_sel=pl.pick_sel; });
       next.push(v); });
     old.forEach((o,id)=>{ if(!m.has(id)&&PENDING.has(id)) next.push(o); });
-    ORDERS=next.sort((a,b)=>b.created-a.created); done("orders"); scheduleRefresh(); },err);
+    ORDERS=next.sort((a,b)=>b.created-a.created); done("orders"); scheduleRefresh(); },err); }
   return ready;
 }
 async function seedIfEmpty(){
@@ -740,16 +767,18 @@ async function loadAll(){
   const ready=startWatchers(); await ready; await seedIfEmpty();
 }
 
-/* ---------- units (one per physical bike, code = prefix-001) ---------- */
+/* ---------- units (one per physical bike, code = prefix-001; other branches: SC-prefix-001) ---------- */
+const bcount=b=>BR==="main"?(b.count||0):(((b.bc||{})[BR])||0);   // bikes of this type in this branch
 function syncUnits(b){
   // Keeps exactly b.count bikes in service. Re-uses retired codes first (lowest number), so the stickers already on the bikes stay valid.
   const num=u=>parseInt(u.code.split("-").pop(),10)||0;
   const mine=()=>UNITS.filter(u=>u.bikeId===b.id);
   let live=mine().filter(u=>u.st!=="retired").length;
   const retired=mine().filter(u=>u.st==="retired").sort((a,c)=>num(a)-num(c));
-  while(live<b.count&&retired.length){ retired.shift().st="free"; live++; }
-  for(let i=1; live<b.count; i++){ const code=`${b.prefix}-${pad(i,3)}`; if(UNITS.some(u=>u.code===code)) continue; UNITS.push({code,bikeId:b.id,st:"free"}); live++; }
-  if(live>b.count){ const free=mine().filter(u=>u.st==="free").sort((a,c)=>num(c)-num(a)); while(live>b.count&&free.length){ free.shift().st="retired"; live--; } }
+  const want=bcount(b);
+  while(live<want&&retired.length){ retired.shift().st="free"; live++; }
+  for(let i=1; live<want; i++){ const code=`${brPre()}${b.prefix}-${pad(i,3)}`; if(UNITS.some(u=>u.code===code)) continue; UNITS.push({code,bikeId:b.id,st:"free"}); live++; }
+  if(live>want){ const free=mine().filter(u=>u.st==="free").sort((a,c)=>num(c)-num(a)); while(live>want&&free.length){ free.shift().st="retired"; live--; } }
   return live;   // may stay above count when bikes are out on rental (they are retired later)
 }
 const unit=c=>UNITS.find(u=>u.code===c);
@@ -1034,7 +1063,7 @@ async function confirmOrder(){
   try{
   const c=custById(S.custId), dow=todayDow(), sel=[...S.sel], draftId=S.draftId;
   const o={id:"",created:NOW(),custId:c?c.id:null,who:c?c.name:"Walk-in",phone:c?c.phone:"",gender:c?c.gender:"",
-    dow,dayOffer:S.dayOffer,nbk:S.nbk,co:chosenCO(),lyRef:S.ly?(S.lyRef||"").trim():"",p:{...SET.offers},lines:[],invoices:[],voucher:null,by:(CURUSER||{}).email||"",rev:1};
+    branch:{id:BR,name:brCur().name},dow,dayOffer:S.dayOffer,nbk:S.nbk,co:chosenCO(),lyRef:S.ly?(S.lyRef||"").trim():"",p:{...SET.offers},lines:[],invoices:[],voucher:null,by:(CURUSER||{}).email||"",rev:1};
   const PH=S.hours||1; o.lines=sel.map((code,i)=>{const l={...ticketLine(code,i),state:"waiting",paidH:PH}; l.adv=priceFor(o,l,PH); return l;});
   const adv=r3(o.lines.reduce((a,l)=>a+l.adv,0));
   // One cloud transaction: check every bike is still free (another desk may have just taken it), reserve them, take the numbers.
@@ -1378,10 +1407,10 @@ async function doRefund(){
 /* ================= documents: receipt, invoice, WhatsApp ================= */
 // Coffee vouchers of an order: one per Wednesday-offer bike. Older orders kept a single code for the whole order.
 const vouchersOf=o=>{ const v=o.lines.filter(l=>l.voucher).map(l=>({code:l.voucher,bike:l.code})); return v.length?v:(o.voucher?[{code:o.voucher,bike:""}]:[]); };
-const rctNo=inv=>inv.no.replace(/^PR?INV/,"PRCT");
+const rctNo=inv=>inv.no.replace(/(^|-)PR?INV(?=-)/,"$1PRCT");
 function receiptHTML(o,inv){
   const cr=inv.amount<0, C=SET.company;
-  return `<div class="rcpt"><div class="rc-h"><b>${esc(C.name)}</b><div>${esc(C.ar)}</div><small>${esc(C.line)}</small>${C.phone?`<small style="display:block">Tel · هاتف ${esc(C.phone)}</small>`:""}</div>
+  return `<div class="rcpt"><div class="rc-h"><b>${esc(C.name)}</b><div>${esc(C.ar)}</div><small>${esc(C.line)}</small>${(o.branch&&o.branch.id!=="main")||multiBranch()?`<small style="display:block">Branch · الفرع: ${esc((o.branch||brCur()).name)}</small>`:""}${C.phone?`<small style="display:block">Tel · هاتف ${esc(C.phone)}</small>`:""}</div>
     <div class="rc-t">${cr?"CASH REFUND RECEIPT":"CASH RECEIPT"}<br><small>${cr?"إيصال استرداد":"إيصال قبض"}</small></div>
     <div class="prov">Provisional receipt · official invoice issued in Odoo</div>
     <div class="rc-kv"><span>Receipt</span><span>${rctNo(inv)}</span></div><div class="rc-kv"><span>${cr?"Credit note":"Invoice"}</span><span>${inv.no}</span></div>
@@ -1397,7 +1426,7 @@ function receiptHTML(o,inv){
 }
 function invoiceHTML(o,inv){
   const cr=inv.amount<0, paid=r3(inv.pays.reduce((a,p)=>a+p.amt,0)), C=SET.company;
-  return `<div class="a4"><div class="a4-h"><div><b>${esc(C.name)}</b> <span>${esc(C.ar)}</span><div class="muted">${esc(C.line)}</div>${C.phone?`<div class="muted">Tel · هاتف ${esc(C.phone)}</div>`:""}</div><div class="a4-t">${cr?"Credit Note":"Invoice"}<div class="muted">${cr?"إشعار دائن":"فاتورة"}</div><div class="muted" style="font-size:12px">Provisional (pilot)</div></div></div>
+  return `<div class="a4"><div class="a4-h"><div><b>${esc(C.name)}</b> <span>${esc(C.ar)}</span><div class="muted">${esc(C.line)}</div>${(o.branch&&o.branch.id!=="main")||multiBranch()?`<div class="muted">Branch: ${esc((o.branch||brCur()).name)}</div>`:""}${C.phone?`<div class="muted">Tel · هاتف ${esc(C.phone)}</div>`:""}</div><div class="a4-t">${cr?"Credit Note":"Invoice"}<div class="muted">${cr?"إشعار دائن":"فاتورة"}</div><div class="muted" style="font-size:12px">Provisional (pilot)</div></div></div>
     <div class="a4-meta"><div><small>Bill to</small><b>${esc(o.who)}</b><div>${fmtPhone(o.phone)}</div></div><div><small>Number</small><b>${inv.no}</b><small>Date</small><b>${dt(inv.at)}</b><small>Source</small><b>${o.id}</b></div></div>
     <table class="a4-tb"><tr><th>Bike</th><th>Description</th><th class="r">Amount KWD</th></tr>
     ${inv.items.map(i=>`<tr style="font-weight:700"><td><b>${i.code}</b> ${esc(i.name)}</td><td style="font-weight:400">${esc(i.desc)}</td><td class="r">${f(i.amt)}</td></tr>`).join("")}
@@ -1528,7 +1557,7 @@ function exportOffers(){ const rows=offerRows(OFR.from,OFR.to,OFR.sel);
   const out=[["date","time","order","customer","mobile","bike code","bike type","offer","hours","status","normal price","charged","discount"]];
   rows.sort((a,b)=>a.at-b.at).forEach(r=>out.push([r.d,clock(r.at),r.o.id,r.o.who,r.o.phone,r.l.code,r.l.name,r.name,fmtH(r.H).replace(" h",""),r.done?"returned":"out / not returned",f(r.normal),f(r.charged),f(r.disc)]));
   const tag=(OFR.sel||"all-offers").toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g,"-").replace(/^-|-$/g,"")||"offer";
-  return saveFiles([{name:`ghostbike-offers-${tag}-${OFR.from}_to_${OFR.to}.csv`,data:csv(out)}]).then(w=>toast(w==="folder"?"Saved in the backup folder.":"Saved to Downloads.")); }
+  return saveFiles([{name:`${fileTag()}-offers-${tag}-${OFR.from}_to_${OFR.to}.csv`,data:csv(out)}]).then(w=>toast(w==="folder"?"Saved in the backup folder.":"Saved to Downloads.")); }
 function refreshOffRep(){ const box=$("offRep"); if(!box) return; box.outerHTML=offersReportHTML(OFR.from); }
 function renderReport(){
   const D=$("repDate").value||dayKey(NOW()); $("repDate").value=D; if(OFR&&OFR.day!==D) OFR=null;
@@ -1539,7 +1568,7 @@ function renderReport(){
   const openNow=ORDERS.reduce((a,o)=>a+o.lines.filter(l=>OPEN.includes(l.state)).length,0), toSettle=ORDERS.reduce((a,o)=>a+o.lines.filter(l=>SETTLE.includes(l.state)).length,0);
   const tbl=(title,obj,neg)=>`<div class="spanel"><h3>${title}</h3><table class="rtbl"><tr><th>Item</th><th class="r">KWD</th></tr>${Object.keys(obj).length?Object.entries(obj).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="r num">${f(neg?-v:v)}</td></tr>`).join(""):`<tr><td colspan="2" class="muted">None</td></tr>`}<tr class="t"><td>Total</td><td class="r num">${f(neg?-sum(obj):sum(obj))}</td></tr></table></div>`;
   $("reportBody").innerHTML=`
-    <div class="spanel"><h3>${DAYS[new Date(D+"T12:00").getDay()]} ${D}</h3>
+    <div class="spanel"><h3>${DAYS[new Date(D+"T12:00").getDay()]} ${D}${multiBranch()?` · ${esc(brCur().name)}`:""}</h3>
       <p>${x.created.length} orders · ${x.bikes} bikes · ${x.invs.length} documents · ${x.vouchers.length} coffee voucher${x.vouchers.length===1?"":"s"} issued${x.vouchers.length?` (${x.vouchers.map(v=>v.code).join(", ")})`:""}</p>
       ${D===dayKey(NOW())&&(openNow||toSettle||DRAFTS.length)?`<p class="warnmsg">Before closing: ${openNow} bike(s) still out or waiting · ${toSettle} to settle · ${DRAFTS.length} unfinished ticket(s).</p>`:""}
       <p><b>Net revenue:</b> <span class="num">${f(revT-refT-x.disc)}</span> KWD (sales ${f(revT)} − refunds ${f(refT)}${x.disc?` − special discounts ${f(x.disc)}`:""})</p></div>
@@ -1555,33 +1584,45 @@ function renderReport(){
       <p>${diff===null?"Enter the counted cash at closing.":diff===0?'<span class="okmsg">Drawer balances.</span>':`<span class="warnmsg">Difference ${f(diff)} KWD</span>`}${expected<0?' · <span class="warnmsg">Drawer negative: top-up from main cash needed.</span>':""}</p>
       <div class="btnrow"><button class="btn" data-savecash="${D}">Save cash count</button></div></div>
     <div class="spanel"><h3>Close day & export for Odoo</h3>
-      <p class="lnote">Saves 4 files${META.folderName?` into the folder <b>${esc(META.folderName)}</b>`:" to Downloads (choose a backup folder in Settings to save automatically)"}: Odoo journal entry (CSV), customers (CSV), detailed transactions (CSV) and a full backup.</p>
-      ${(!SET.accounts.journal||!SET.accounts.revenue||SET.methods.some(m=>!SET.accounts[m]))?`<p class="warnmsg">Account codes are missing in Settings. The journal entry file will have blank accounts.</p>`:""}
-      <div class="btnrow"><button class="btn pri" data-closeday="${D}">Close day & save files</button><button class="btn" data-exp="je|${D}">Journal entry CSV</button><button class="btn" data-exp="det|${D}">Details CSV</button><button class="btn" data-exp="cust|${D}">Customers CSV</button></div></div>`;
+      <p class="lnote">Saves 4 files${META.folderName?` into the folder <b>${esc(META.folderName)}</b>`:" to Downloads (choose a backup folder in Settings to save automatically)"}: customers, invoices, payments (CSV files to import into Odoo, in that order), detailed transactions (CSV) and a full backup${multiBranch()?`, for <b>${esc(brCur().name)}</b> only`:""}.</p>
+      ${(!SET.accounts.journal||SET.methods.some(m=>!SET.accounts[m]))?`<p class="warnmsg">Odoo journals are missing in Settings (sales journal, or a payment journal per method). Odoo will ask for them on import.</p>`:""}${!brCur().analytic?`<p class="warnmsg">No Odoo analytic account set for ${esc(brCur().name)} (Settings → Branches). Invoice lines will have no analytic.</p>`:""}
+      <div class="btnrow"><button class="btn pri" data-closeday="${D}">Close day & save files</button><button class="btn" data-exp="cust|${D}">1 · Customers CSV</button><button class="btn" data-exp="inv|${D}">2 · Invoices CSV</button><button class="btn" data-exp="pay|${D}">3 · Payments CSV</button><button class="btn" data-exp="det|${D}">Details CSV</button></div>
+      <p class="lnote">In Odoo: import <b>Customers</b> (Contacts), then <b>Invoices</b> (Accounting → Customers → Invoices → Import), confirm them, then <b>Payments</b> (Accounting → Customers → Payments → Import) and confirm. Each payment is linked to its invoice.</p></div>`;
 }
 function saveCash(D){ REPORT_DIRTY=false; const A=id=>{ const v=$(id).value.trim(); return v===""?"":String(parseAmt(v)); }; DAYS_LOG[D]={...(DAYS_LOG[D]||{}),float:A("cFloat"),topup:A("cTop"),counted:A("cCount")}; persist("days"); renderReport(); toast("Cash count saved."); }
 const csv=rows=>"\ufeff"+rows.map(r=>r.map(v=>{v=v==null?"":String(v);return /[",\n]/.test(v)?`"${v.replace(/"/g,'""')}"`:v;}).join(",")).join("\r\n");
-function exportJE(D){
-  const x=dayData(D), A=SET.accounts, rows=[["journal_id","date","ref","line_ids/account_id","line_ids/name","line_ids/debit","line_ids/credit"]];
-  const L=[];
-  Object.entries(x.pay).forEach(([m,v])=>L.push([A[m]||"",`Receipts ${m}`,v,0]));
-  Object.entries(x.rev).forEach(([n,v])=>L.push([A.revenue||"",`Rental ${n}`,0,v]));
-  Object.entries(x.ref).forEach(([n,v])=>L.push([A.revenue||"",`Refund ${n}`,v,0]));
-  if(x.cashRef) L.push([A["Cash"]||"","Cash refunds",0,x.cashRef]);
-  if(x.disc) L.push([A.revenue||"","Special discounts",x.disc,0]);
-  L.splice(0,L.length,...L.filter(l=>Math.abs(l[2])>0.0005||Math.abs(l[3])>0.0005));
-  L.forEach((l,i)=>rows.push(i===0?[A.journal||"",D,`Ghost Bike pilot ${D}`,l[0],l[1],f(l[2]),f(l[3])]:["","","",l[0],l[1],f(l[2]),f(l[3])]));
-  return {name:`ghostbike-journal-${D}.csv`,data:csv(rows)};
+// Odoo import files (Accounting): 1) customer invoices and credit notes, one line per bike, with the branch analytic account;
+// 2) payments, each linked to the invoice it settles. Customers carry an external ID so both files find the same contact.
+const xid=v=>String(v).replace(/[^A-Za-z0-9]+/g,"_");
+const custXid=o=>o.custId?"ghostbike_cust_"+xid(o.custId):"ghostbike_walkin";
+const invXid=inv=>"ghostbike_inv_"+xid(inv.no);
+function dayInvs(D){ const out=[]; ORDERS.forEach(o=>o.invoices.forEach(i=>{ if(dayKey(i.at)===D) out.push({o,i}); })); return out.sort((x,y)=>x.i.at-y.i.at); }
+function exportInvoices(D){
+  const A=SET.accounts, an=brCur().analytic, dist=an?JSON.stringify({[an]:100}):"";
+  const rows=[["id","move_type","partner_id/id","invoice_date","ref","journal_id","invoice_line_ids/product_id","invoice_line_ids/name","invoice_line_ids/quantity","invoice_line_ids/price_unit","invoice_line_ids/account_id","invoice_line_ids/analytic_distribution"]];
+  dayInvs(D).forEach(({o,i})=>{ const cr=i.amount<0, sg=cr?-1:1;
+    const items=i.items.length?i.items:[{name:"Bike rental",desc:"",amt:0}];
+    items.forEach((it,k)=>{ const head=k===0?[invXid(i),cr?"out_refund":"out_invoice",custXid(o),D,`${i.no} · ${o.id}`,A.journal||""]:["","","","","",""];
+      rows.push([...head,it.disc?"":it.name,`${it.code?it.code+" ":""}${it.disc?"Special discount":it.name}${it.desc?" · "+it.desc:""}`,1,f(sg*it.amt),A.revenue||"",dist]); }); });
+  return {name:`${fileTag()}-odoo-invoices-${D}.csv`,data:csv(rows)};
+}
+function exportPayments(D){
+  const A=SET.accounts, rows=[["id","partner_id/id","date","amount","journal_id","payment_type","partner_type","memo","invoice_ids/id"]];
+  dayInvs(D).forEach(({o,i})=>{ (i.pays||[]).forEach((p,k)=>{ if(Math.abs(p.amt)<0.0005) return;
+    rows.push([invXid(i)+"_pay"+(k+1),custXid(o),D,f(Math.abs(p.amt)),A[p.m]||p.m,p.amt<0?"outbound":"inbound","customer",`${i.no} · ${p.m}`,invXid(i)]); }); });
+  return {name:`${fileTag()}-odoo-payments-${D}.csv`,data:csv(rows)};
 }
 function exportDetails(D){
   const rows=[["date","time","order","document","type","customer","mobile","bike code","bike","description","amount","payment methods","coffee voucher"]];
   ORDERS.forEach(o=>o.invoices.forEach(i=>{ if(dayKey(i.at)!==D) return; i.items.forEach(it=>rows.push([D,clock(i.at),o.id,i.no,i.kind,o.who,o.phone,it.code,it.name,it.desc,f(it.amt),i.pays.map(p=>`${p.m} ${f(p.amt)}`).join(" + "),/Advance/.test(i.kind)?(it.voucher||(!o.lines.some(l=>l.voucher)&&o.voucher)||""):""])); }));
-  return {name:`ghostbike-details-${D}.csv`,data:csv(rows)};
+  return {name:`${fileTag()}-details-${D}.csv`,data:csv(rows)};
 }
-function exportCustomers(){ const rows=[["name","phone","x_studio_selection_field_7b0_1k3j55c0l","ref"]]; CUSTOMERS.forEach(c=>rows.push([c.name,c.phone,c.gender,c.id]));
-  return {name:`ghostbike-customers-${dayKey(NOW())}.csv`,data:csv(rows)}; }
-function backupData(){ return {name:`ghostbike-backup-${dayKey(NOW())}-${new Date().toTimeString().slice(0,5).replace(":","")}.json`,
-  data:JSON.stringify({app:"ghostbike-pilot",version:1,exported:NOW(),settings:SET,bikes:BIKES,units:UNITS,customers:CUSTOMERS,drafts:DRAFTS,counters:COUNTERS,days:DAYS_LOG,meta:META,orders:ORDERS})}; }
+function exportCustomers(){ const rows=[["id","name","phone","x_studio_selection_field_7b0_1k3j55c0l","ref","customer_rank"],["ghostbike_walkin","Walk-in Customer","","","WALKIN",1]];
+  CUSTOMERS.forEach(c=>rows.push(["ghostbike_cust_"+xid(c.id),c.name,c.phone,c.gender,c.id,1]));
+  return {name:`${fileTag()}-customers-${dayKey(NOW())}.csv`,data:csv(rows)}; }
+const fileTag=()=>BR==="main"?"ghostbike":"ghostbike-"+(brCur().code||BR).toLowerCase();
+function backupData(){ return {name:`${fileTag()}-backup-${dayKey(NOW())}-${new Date().toTimeString().slice(0,5).replace(":","")}.json`,
+  data:JSON.stringify({app:"ghostbike-pilot",version:1,exported:NOW(),branch:BR,settings:SET,bikes:BIKES,units:UNITS,customers:CUSTOMERS,drafts:DRAFTS,counters:COUNTERS,days:DAYS_LOG,meta:META,orders:ORDERS})}; }
 
 /* ---------- saving files: chosen folder (Chrome/Edge) or Downloads ---------- */
 let FOLDER=null;
@@ -1602,7 +1643,7 @@ async function saveFiles(files){
 async function backupNow(extra=[]){
   await flush(); const where=await saveFiles([...extra,backupData()]); META.lastBackup=NOW(); persist("meta"); checkBanner();
   toast(where==="folder"?`Saved in “${FOLDER.name}”.`:"Saved to Downloads."); }
-async function closeDay(D){ await backupNow([exportJE(D),exportCustomers(),exportDetails(D)]); DAYS_LOG[D]={...(DAYS_LOG[D]||{}),closed:NOW()}; persist("days"); }
+async function closeDay(D){ await backupNow([exportCustomers(),exportInvoices(D),exportPayments(D),exportDetails(D)]); DAYS_LOG[D]={...(DAYS_LOG[D]||{}),closed:NOW()}; persist("days"); }
 function checkBanner(){
   const b=$("banner"), hrs=(NOW()-(META.lastBackup||0))/3600e3;
   if(ORDERS.length&&hrs>=(+SET.backupHours||12)){ b.hidden=false; b.innerHTML=`<span>${META.lastBackup?`No backup for ${Math.floor(hrs)} hours.`:"No backup yet."} Keep a copy off this PC.</span><button data-backup>Backup now</button>`; }
@@ -1631,23 +1672,25 @@ async function doWipe(){
   const now=NOW(), ops=[];
   new Set([...ORDERS.map(o=>o.id),...LAST_ORD.keys()]).forEach(id=>ops.push({t:"del",col:"orders",id}));
   DRAFTS.forEach(d=>ops.push({t:"del",col:"drafts",id:d.id}));
-  CUSTOMERS.forEach(c=>ops.push({t:"del",col:"customers",id:c.id}));
+  if(BR==="main") CUSTOMERS.forEach(c=>ops.push({t:"del",col:"customers",id:c.id}));   // customers are shared: only erased from the main branch
   Object.keys(DAYS_LOG).forEach(d=>ops.push({t:"del",col:"days",id:d}));
   const units=UNITS.map(u=>u.st==="retired"?u:{...u,st:"free",draft:null,issue:null,since:now});
   units.forEach(u=>ops.push({t:"set",col:"units",id:u.code,data:clean(u)}));
   ops.push({t:"set",col:"config",id:"counters",data:{}});
   try{ for(let i=0;i<ops.length;i+=400) await withTimeout(cl.write(ops.slice(i,i+400)),15000); }
   catch(e){ b.disabled=false; b.textContent="Erase everything"; return toast("Erase stopped ("+(e.code||e.message)+"). Check the connection and try again: the backup is saved."); }
-  ORDERS=[]; DRAFTS=[]; CUSTOMERS=[]; DAYS_LOG={}; UNITS=units; COUNTERS={}; LAST_ORD=new Map();
-  ["orders","drafts","customers","days"].forEach(k=>BASE[k]={}); BASE.units={}; units.forEach(u=>BASE.units[u.code]=JSON.stringify(clean(u)));
-  resetTicket(); $("dlg").close(); refreshAll(); toast("All test data erased. Next order will be T-00001.");
+  ORDERS=[]; DRAFTS=[]; if(BR==="main") CUSTOMERS=[]; DAYS_LOG={}; UNITS=units; COUNTERS={}; LAST_ORD=new Map();
+  ["orders","drafts","days",...(BR==="main"?["customers"]:[])].forEach(k=>BASE[k]={}); BASE.units={}; units.forEach(u=>BASE.units[u.code]=JSON.stringify(clean(u)));
+  resetTicket(); $("dlg").close(); refreshAll(); toast(`All test data erased${multiBranch()?" for "+brCur().name:""}. Next order will be ${numFmt("order",1)}.`);
 }
 // Loads a backup file (or this PC's old pilot data) into the shared cloud database.
 async function importData(d,label){
+  const fromBr=d.branch||"main";   // a backup belongs to one branch: load it only into that branch
+  if(fromBr!==BR) return toast(`Not imported: this backup is from ${(brList().find(b=>b.id===fromBr)||{name:"another branch"}).name}. Switch this PC to that branch first (top bar), then load it.`);
   const orders=d.orders||[], clash=orders.filter(o=>ORDERS.some(x=>x.id===o.id)).map(o=>o.id);
   if(clash.length) return toast(`Not imported: ${clash.length} order number(s) already exist in the cloud (e.g. ${clash[0]}). This data was probably imported already.`);
   if(!confirm(`Load ${label} into the cloud?\n${orders.length} orders, ${(d.customers||[]).length} customers.\nSettings, bikes and codes will be replaced by the ones in ${label}.`)) return;
-  const ops=[{t:"set",col:"config",id:"settings",data:clean({...d.settings,placeholderCounts:false})},{t:"set",col:"config",id:"bikes",data:{list:clean(d.bikes)}}];
+  const ops=[{t:"set",col:"config",id:"settings",data:clean({...d.settings,placeholderCounts:false,branches:SET.branches||[],mainBranch:SET.mainBranch||d.settings.mainBranch||null})},{t:"set",col:"config",id:"bikes",data:{list:clean(d.bikes)}}];
   const cnt={...COUNTERS}; Object.entries(d.counters||{}).forEach(([k,v])=>{ if(typeof v==="number") cnt[k]=Math.max(cnt[k]||0,v); });
   ops.push({t:"set",col:"config",id:"counters",data:cnt});
   (d.units||[]).forEach(u=>ops.push({t:"set",col:"units",id:u.code,data:clean(u)}));
@@ -1700,11 +1743,47 @@ function offersTabHTML(){ const O=SET.offers;
     <p class="lnote">Each offer is a special price per hour on the bikes you choose (leave a bike empty to exclude it); it can be higher than the normal price, for example a bundle with a free coffee. Active offers appear under Offers on New rental; staff tap them for the customers who qualify. A selected offer replaces the normal and day prices on its bikes; with NBK or another offer, the customer gets the cheapest. The price applies to every hour, including extra time. Tick “Men only” to show a ♂ mark on each bike for groups of 2+ bikes, so staff can leave out bikes not ridden by men.</p>
     <div id="coList">${(SET.customOffers||[]).map(coCard).join("")||'<p class="muted" id="coEmpty">No offers yet.</p>'}</div>
     <div class="btnrow"><button class="btn" data-coadd>+ Add offer</button><button class="btn pri" data-savesettings>Save all</button></div></div>`; }
+// Branches: the Main branch plus any added branch. A branch's id never changes (its data is stored under it).
+const emailsOf=id=>Object.entries(ACCESS.users||{}).filter(([e,b])=>b===id).map(([e])=>e);
+function brCard(b){ const main=b.id==="main";
+  return `<div class="spanel cocard" data-brc="${esc(b.id)}"><div class="sgrid">
+    <label>Branch name<input data-bf="name" value="${esc(b.name||"")}" placeholder="e.g. Scientific Center"></label>
+    <label>Arabic name<input data-bf="ar" dir="rtl" value="${esc(b.ar||"")}"></label>
+    ${main?`<label>Code<input value="(none)" disabled></label>`:`<label>Code (letters, used in numbers and bike codes)<input data-bf="code" value="${esc(b.code||"")}" maxlength="4" placeholder="SC" ${b.id?"disabled":""}></label>`}
+    <label>Odoo analytic account ID<input data-bf="analytic" inputmode="numeric" value="${esc(b.analytic||"")}" placeholder="e.g. 12"></label></div>
+    ${main?`<p class="lnote">Staff not assigned to another branch work in the Main branch.</p>`
+      :`<div class="sgrid" style="margin-top:10px"><label style="grid-column:1/-1">Staff emails for this branch (one per line or comma separated)<textarea data-bf="emails" rows="2" style="width:100%;font:inherit;padding:8px 10px;border-radius:10px;border:1px solid var(--line)">${esc(emailsOf(b.id).join("\n"))}</textarea></label></div>
+        <p class="lnote">These logins see and work on this branch only: its orders, invoices, receipts, pickups, returns and bikes.</p>`}
+    ${!signedInAdmin()&&b.id===BR?`<p class="lnote"><b>This desk works in this branch.</b></p>`:!signedInAdmin()?"":b.id&&b.id!==BR?`<div class="btnrow"><button class="btn" data-brgo="${esc(b.id)}">Work in this branch on this PC</button></div>`:b.id?`<p class="lnote"><b>This PC is working in this branch.</b></p>`:""}</div>`; }
+function branchesTabHTML(){ return `<div class="spanel"><h3>Branches</h3>
+    <p class="lnote">Each branch has its own bikes, orders, invoices, receipts, numbers and day report. Prices, offers and customers are shared. Managers (${OWNER_EMAILS.join(", ")}) can work in any branch: pick it below; it is remembered on this PC.</p>
+    <div id="brList">${brList().map(brCard).join("")}</div>
+    <div class="btnrow"><button class="btn" data-bradd>+ Add branch</button><button class="btn pri" data-savesettings>Save all</button></div>
+    <p class="lnote">After adding a branch: save, tap “Work in this branch”, then enter its number of bikes in General → Bikes and codes.</p></div>`; }
+function collectBranches(){ const out={err:"",main:null,list:[],users:{}}; if(!$("brList")) return null;
+  const seenCodes=new Set(), owner=new Set(OWNER_EMAILS);
+  document.querySelectorAll("[data-brc]").forEach(card=>{ const g=k=>card.querySelector(`[data-bf="${k}"]`), id=card.dataset.brc;
+    const name=g("name").value.trim(), ar=g("ar").value.trim(), analytic=digits(g("analytic").value);
+    if(id==="main"){ out.main={name:name||"Main branch",ar,analytic}; return; }
+    const code=(g("code").value||"").trim().toUpperCase();
+    if(!name&&!code&&!id) return;                                   // empty new card: ignore
+    if(!name) out.err="Every branch needs a name.";
+    if(!/^[A-Z]{1,4}$/.test(code)) out.err=`Branch “${name}”: the code must be 1–4 letters, e.g. SC.`;
+    if(seenCodes.has(code)) out.err=`Branch code ${code} is used twice.`; seenCodes.add(code);
+    const bid=id||code.toLowerCase(); if(!id&&(bid==="main"||brList().some(b=>b.id===bid))) out.err=`Branch code ${code} is already used.`;
+    out.list.push({id:bid,name,ar,code,analytic});
+    g("emails").value.split(/[\s,;]+/).map(e=>e.trim().toLowerCase()).filter(Boolean).forEach(e=>{
+      if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) out.err=`“${e}” is not a valid email.`;
+      else if(owner.has(e)) out.err=`${e} is a manager and already sees every branch.`;
+      else if(out.users[e]&&out.users[e]!==bid) out.err=`${e} is assigned to two branches.`;
+      else out.users[e]=bid; }); });
+  return out; }
 function renderSettings(){
   const O=SET.offers, C=SET.company, A=SET.accounts;
   const used=pre=>ORDERS.some(o=>o.lines.some(l=>l.code.startsWith(pre+"-")))||DRAFTS.some(d=>d.sel.some(c=>c.startsWith(pre+"-")));
   $("settingsBody").innerHTML=`
-  <div class="stabs" role="tablist"><button data-stab="general" role="tab" aria-selected="${STAB==="general"}">General</button><button data-stab="offers" role="tab" aria-selected="${STAB==="offers"}">Offers</button></div>
+  <div class="stabs" role="tablist"><button data-stab="general" role="tab" aria-selected="${STAB==="general"}">General</button><button data-stab="offers" role="tab" aria-selected="${STAB==="offers"}">Offers</button><button data-stab="branches" role="tab" aria-selected="${STAB==="branches"}">Branches</button></div>
+  ${multiBranch()?`<p class="lnote" style="margin:0 0 12px">You are working in <b>${esc(brCur().name)}</b>. Bike counts and codes are for this branch; prices, offers and the other settings are shared by all branches.</p>`:""}
   <div id="stGeneral" ${STAB==="general"?"":"hidden"}>
   ${SET.placeholderCounts?`<div class="banner" style="margin:0 0 14px"><span>Bike counts are placeholders (2 per type). Enter the real number of bikes per type below, then Save.</span></div>`:""}
   <div class="spanel"><h3>Bikes and codes</h3>
@@ -1712,7 +1791,7 @@ function renderSettings(){
     ${BIKES.map(b=>{const live=UNITS.filter(u=>u.bikeId===b.id&&u.st!=="retired").map(u=>u.code);
       return `<tr data-bike="${b.id}"><td><input data-k="name" value="${esc(b.name)}"></td><td><input data-k="ar" value="${esc(b.ar||"")}" dir="rtl"></td>
       <td><input data-k="prefix" value="${esc(b.prefix)}" class="n" ${used(b.prefix)?'disabled title="Codes already used on orders"':""}></td>
-      <td><input data-k="count" type="number" min="0" class="n" value="${b.count}"></td><td><input data-k="rate" type="number" step="0.001" min="0" class="n" value="${b.rate}"></td>
+      <td><input data-k="count" type="number" min="0" class="n" value="${bcount(b)}"></td><td><input data-k="rate" type="number" step="0.001" min="0" class="n" value="${b.rate}"></td>
       <td><input data-k="mon" type="checkbox" ${b.mon?"checked":""}></td><td><input data-k="wed" type="checkbox" ${b.wed?"checked":""}></td>
       <td><input data-k="group" value="${esc(b.group||"")}"></td><td><select data-k="icon">${ICONS.map(i=>`<option ${i===b.icon?"selected":""}>${i}</option>`).join("")}</select></td>
       <td><input data-k="popular" type="checkbox" ${b.popular?"checked":""}></td><td><input data-k="active" type="checkbox" ${b.active?"checked":""}></td>
@@ -1732,10 +1811,11 @@ function renderSettings(){
     <label>Name<input data-c="name" value="${esc(C.name)}"></label><label>Arabic name<input data-c="ar" value="${esc(C.ar)}" dir="rtl"></label>
     <label>Receipt line<input data-c="line" value="${esc(C.line)}"></label><label>Telephone on receipts<input data-c="phone" inputmode="tel" value="${esc(C.phone||"")}"></label><label>Counter / cashier name<input data-c="cashier" value="${esc(C.cashier)}"></label>
     <label>Payment methods (comma separated)<input id="sMethods" value="${esc(SET.methods.join(", "))}"></label><label>WhatsApp country code<input id="sCC" value="${esc(SET.countryCode)}"></label></div></div>
-  <div class="spanel"><h3>Odoo accounts for the daily journal entry</h3><div class="sgrid">
-    <label>Journal (code or name)<input data-a="journal" value="${esc(A.journal||"")}" placeholder="e.g. MISC"></label>
-    <label>Rental revenue account code<input data-a="revenue" value="${esc(A.revenue||"")}"></label>
-    ${SET.methods.map(m=>`<label>${esc(m)} account code<input data-a="${esc(m)}" value="${esc(A[m]||"")}"></label>`).join("")}</div></div>
+  <div class="spanel"><h3>Odoo import: invoices and payments</h3><div class="sgrid">
+    <label>Sales journal (name as in Odoo)<input data-a="journal" value="${esc(A.journal||"")}" placeholder="e.g. Customer Invoices"></label>
+    <label>Revenue account code (optional; blank = product's account)<input data-a="revenue" value="${esc(A.revenue||"")}"></label>
+    ${SET.methods.map(m=>`<label>${esc(m)}: payment journal (name as in Odoo)<input data-a="${esc(m)}" value="${esc(A[m]||"")}" placeholder="e.g. ${esc(m)}"></label>`).join("")}</div>
+    <p class="lnote">Each branch's analytic account is set in Settings → Branches. Bike names must match the product names in Odoo.</p></div>
   <div class="spanel"><h3>Special discount passkey</h3>
     <p>${SET.discKeyHash?"A passkey is set. Staff enter it to give a special discount on the final invoice.":"<b>No passkey set yet</b>: staff can't give special discounts until you set one."}</p>
     <div class="sgrid"><label>New passkey<input id="dkNew" type="password" autocomplete="new-password"></label><label>Repeat passkey<input id="dkRep" type="password" autocomplete="new-password"></label></div>
@@ -1751,8 +1831,9 @@ function renderSettings(){
     <p class="lnote">Never use “Clear browsing data” in this browser profile: it deletes the app's data. Choose a OneDrive or Google Drive folder so every backup is also copied off this PC.</p></div>
   </div>
   <div id="stOffers" ${STAB==="offers"?"":"hidden"}>${offersTabHTML()}</div>
+  <div id="stBranches" ${STAB==="branches"?"":"hidden"}>${branchesTabHTML()}</div>
   <div class="spanel"><h3>Start fresh</h3>
-    <p>Erases all orders, invoices, receipts, held tickets, day reports and customers, restarts the numbers at T-00001 / PINV-0001, and sets every bike back to free. Settings, prices, offers, bikes and logins are kept.</p>
+    <p>${multiBranch()?`<b>Branch: ${esc(brCur().name)}.</b> `:""}Erases all orders, invoices, receipts, held tickets, day reports${BR==="main"?" and customers":" (customers are shared and kept)"}, restarts the numbers at ${numFmt("order",1)} / ${numFmt("inv",1)}, and sets every bike back to free. Settings, prices, offers, bikes and logins are kept.</p>
     <p class="lnote">A full backup file is saved first. Close the app on every other desk before you start.</p>
     <div class="btnrow"><button class="btn warn" data-wipe>Start fresh – erase test data…</button></div></div>
   <div class="btnrow"><button class="btn pri" data-savesettings>Save all</button></div>`;
@@ -1769,6 +1850,7 @@ function collectChanges(){
     const m={...b,...ch};
     if(!m.name||!m.prefix||!(m.rate>=0)) err=`Check the row for “${m.name||"new bike"}”.`;
     if(BIKES.some(x=>x.id!==id&&x.prefix===m.prefix)) err=`Prefix ${m.prefix} is used twice.`;
+    if("count" in ch&&BR!=="main"){ ch.bc={...(b.bc||{}),[BR]:ch.count}; delete ch.count; }   // another branch: its own number of bikes
     if(Object.keys(ch).length) bc[id]=ch; });
   const num=el=>parseFloat(el.value)||0;
   document.querySelectorAll("[data-o]").forEach(i=>{ if(changed(i)) sc.push([["offers",i.dataset.o],num(i)]); });
@@ -1779,24 +1861,30 @@ function collectChanges(){
       if(!o.name) err="Every offer needs a name."; else if(o.active&&!Object.keys(prices).length) err=`Offer “${o.name}”: enter a price for at least one bike, or switch it off.`;
       return o; });
     if(JSON.stringify(list)!==JSON.stringify(clean(SET.customOffers||[]))) sc.push([["customOffers"],list]); }
+  const brs=collectBranches(); let access=null;
+  if(brs){ if(brs.err) err=brs.err;
+    if(JSON.stringify(brs.main)!==JSON.stringify(clean(SET.mainBranch||{name:"Main branch",ar:"",analytic:""}))) sc.push([["mainBranch"],brs.main]);
+    if(JSON.stringify(brs.list)!==JSON.stringify(clean(SET.branches||[]))) sc.push([["branches"],brs.list]);
+    if(JSON.stringify(brs.users)!==JSON.stringify(clean(ACCESS.users||{}))) access={users:brs.users}; }
   document.querySelectorAll("[data-c]").forEach(i=>{ if(changed(i)) sc.push([["company",i.dataset.c],i.value.trim()]); });
   document.querySelectorAll("[data-a]").forEach(i=>{ if(changed(i)) sc.push([["accounts",i.dataset.a],i.value.trim()]); });
   if(changed($("sMethods"))){ const ms=$("sMethods").value.split(",").map(x=>x.trim()).filter(Boolean); if(ms.length) sc.push([["methods"],ms]); }
   if(changed($("sCC"))) sc.push([["countryCode"],digits($("sCC").value)||"965"]);
   document.querySelectorAll("[data-s]").forEach(i=>{ if(changed(i)) sc.push([[i.dataset.s],i.dataset.s==="testDay"?i.value:(parseFloat(i.value)||12)]); });
-  return {sc,bc,err};
+  return {sc,bc,err,access};
 }
 const applySet=(obj,sc)=>{ sc.forEach(([path,val])=>{ let o=obj; for(let i=0;i<path.length-1;i++) o=o[path[i]]=o[path[i]]||{}; o[path[path.length-1]]=val; }); return obj; };
 function applyBikes(list,bc){ Object.entries(bc).forEach(([id,ch])=>{ const b=list.find(x=>x.id===id); if(b) Object.assign(b,ch); }); return list; }
 async function saveAllSettings(){
   const AC=adminCloud(); if(!AC){ toast("Only a manager can change Settings."); return false; }
-  const {sc,bc,err}=collectChanges(); if(err){ toast(err); return false; }
-  if(!sc.length&&!Object.keys(bc).length){ SETDIRTY=false; toast("No changes to save."); return []; }
-  const notes=[], countsTouched=Object.values(bc).some(ch=>"count" in ch);
+  const {sc,bc,err,access}=collectChanges(); if(err){ toast(err); return false; }
+  if(access){ ACCESS=access; persist("access"); }
+  if(!sc.length&&!Object.keys(bc).length){ if(access){ SETDIRTY=false; renderSettings(); toast("Saved. Branch staff updated."); return []; } SETDIRTY=false; toast("No changes to save."); return []; }
+  const notes=[], countsTouched=Object.values(bc).some(ch=>"count" in ch||"bc" in ch);
   // apply here first (prefix renames and bike counts update the bike codes)
   Object.entries(bc).forEach(([id,ch])=>{ const b=bikeById(id); if(!b) return;
     if(ch.prefix&&ch.prefix!==b.prefix) UNITS.filter(u=>u.bikeId===id).forEach(u=>{u.code=u.code.replace(b.prefix+"-",ch.prefix+"-");});
-    Object.assign(b,ch); const live=syncUnits(b); if(live>b.count) notes.push(`${b.name}: ${live-b.count} bike(s) are out or reserved, so ${live} stay until they come back`); });
+    Object.assign(b,ch); const live=syncUnits(b); if(live>bcount(b)) notes.push(`${b.name}: ${live-bcount(b)} bike(s) are out or reserved, so ${live} stay until they come back`); });
   applySet(SET,sc); if(countsTouched) SET.placeholderCounts=false;
   persist("units");
   try{ const res=await withTimeout(AC.txn(async t=>{ const sv=(await t.get("config","settings"))||clean(SET), bv=(await t.get("config","bikes"))||{list:clean(BIKES)};
@@ -1847,7 +1935,7 @@ function openUnlock(v){
     if(own?!isOwnerEmail(em):!isAdminEmail(em)){ $("ulMsg").innerHTML=`<span class="bad">Only the owner can open the ${name}.</span>`; return; }
     $("ulBtn").disabled=true; $("ulBtn").textContent="Checking…";
     try{ const cl=await withTimeout(CLOUD.elevate(em,pw),15000);
-      ELEV={email:cl.email||em,cloud:cl,until:NOW()+MGR_MIN*60e3,unwatch:watchDays(cl)};
+      const wc=wrapCloud(cl); ELEV={email:cl.email||em,cloud:wc,until:NOW()+MGR_MIN*60e3,unwatch:watchDays(wc)};
       $("dlg").close(); toast(`Unlocked by ${ELEV.email.split("@")[0]}. Locks when you leave ${name} or after ${MGR_MIN} idle minutes.`);
       refreshAll(); showView(v); }
     catch(err){ $("ulMsg").innerHTML=`<span class="bad">${esc(UNLOCK_ERR[err.code]||err.message)}</span>`; $("ulBtn").disabled=false; $("ulBtn").textContent=`Unlock ${name}`; } };
@@ -1866,6 +1954,10 @@ function render(){ renderNew(); }
 let REPORT_DIRTY=false;
 function refreshAll(){ renderNew(); renderBoard(); renderSettle(); renderMaint(); if(VIEW==="orders") renderOrders(); if(VIEW==="report"&&!REPORT_DIRTY) renderReport(); if(VIEW==="settings"&&!SETDIRTY) renderSettings();
   $("ordCount").textContent=DRAFTS.length?DRAFTS.length:""; $("brandName").textContent=SET.company.name;
+  // branch: staff see their branch name; managers can switch the branch this PC works in
+  const bl=$("brLbl"), bk=JSON.stringify([multiBranch(),BR,brList().map(b=>[b.id,b.name]),signedInAdmin()]);
+  if(bl.dataset.k!==bk){ bl.dataset.k=bk; bl.innerHTML=!multiBranch()?"":signedInAdmin()?`📍 <select id="brSel" aria-label="Branch">${brList().map(b=>`<option value="${esc(b.id)}" ${b.id===BR?"selected":""}>${esc(b.name)}</option>`).join("")}</select>`:`📍 ${esc(brCur().name)}`;
+    const se=$("brSel"); if(se) se.onchange=()=>switchBranch(se.value); }
   document.querySelectorAll('[data-view="settings"]').forEach(t=>t.classList.toggle("locked",!isOwner()));
   document.querySelectorAll('[data-view="report"]').forEach(t=>t.classList.toggle("locked",!isOwner()));
   $("mgrLbl").innerHTML=ELEV?`<button class="bkbtn mgr" data-lockmgr title="Lock manager screens now">🔓 ${esc(ELEV.email.split("@")[0])} · Lock</button>`:"";
@@ -1950,7 +2042,7 @@ document.addEventListener("click",e=>{
   if(x=c("[data-fix]")){ const u=unit(x.dataset.fix); u.st="free"; u.issue=null; syncUnits(bikeById(u.bikeId)); persist("units"); refreshAll(); return toast(`${u.code} back in service.`); }
   if(x=c("[data-savecash]")) return saveCash(x.dataset.savecash);
   if(x=c("[data-closeday]")) return closeDay(x.dataset.closeday);
-  if(x=c("[data-exp]")){ const [k,D]=x.dataset.exp.split("|"); return saveFiles([k==="je"?exportJE(D):k==="det"?exportDetails(D):exportCustomers()]).then(w=>toast(w==="folder"?"Saved in the backup folder.":"Saved to Downloads.")); }
+  if(x=c("[data-exp]")){ const [k,D]=x.dataset.exp.split("|"); return saveFiles([k==="inv"?exportInvoices(D):k==="pay"?exportPayments(D):k==="det"?exportDetails(D):exportCustomers()]).then(w=>toast(w==="folder"?"Saved in the backup folder.":"Saved to Downloads.")); }
   if(c("[data-backup]")) return backupNow();
   if(c("[data-ofexp]")) return exportOffers();
   if(c("[data-hidebanner]")){ META.persistWarned=true; persist("meta"); return checkBanner(); }
@@ -1962,7 +2054,9 @@ document.addEventListener("click",e=>{
   if(c("[data-lockmgr]")){ lockManager("Manager screens locked."); return; }
   if(c("[data-signout]")){ if(confirm("Sign out of this desk?")){ lockManager(); CLOUD.signOut().then(()=>location.reload()); } return; }
   if(c("[data-addbike]")) return addBike();
-  if(x=c("[data-stab]")){ STAB=x.dataset.stab; document.querySelectorAll("[data-stab]").forEach(b=>b.setAttribute("aria-selected",b===x)); $("stGeneral").hidden=STAB!=="general"; $("stOffers").hidden=STAB!=="offers"; return; }
+  if(x=c("[data-stab]")){ STAB=x.dataset.stab; document.querySelectorAll("[data-stab]").forEach(b=>b.setAttribute("aria-selected",b===x)); $("stGeneral").hidden=STAB!=="general"; $("stOffers").hidden=STAB!=="offers"; $("stBranches").hidden=STAB!=="branches"; return; }
+  if(c("[data-bradd]")){ const d=document.createElement("div"); d.innerHTML=brCard({id:"",name:"",ar:"",code:"",analytic:"",emails:[]}); $("brList").appendChild(d.firstElementChild); SETDIRTY=true; return; }
+  if(x=c("[data-brgo]")) return switchBranch(x.dataset.brgo);
   if(c("[data-coadd]")){ const e=$("coEmpty"); if(e) e.remove(); const id="o"+Date.now().toString(36); $("coList").insertAdjacentHTML("beforeend",coCard({id,name:"",ar:"",active:true,prices:{}}));
     SETDIRTY=true; const card=document.querySelector(`[data-cof="${id}"]`); card.querySelector('[data-cf="name"]').focus(); return; }
   if(x=c("[data-codel]")){ const card=document.querySelector(`[data-cof="${x.dataset.codel}"]`); if(card&&confirm("Delete this offer? Orders already paid keep their prices.")){ card.remove(); SETDIRTY=true; toast("Press Save all to delete it for every desk."); } return; }
@@ -2015,6 +2109,7 @@ let STARTED=false;
   try{
     if(window.MOCK_CLOUD) CLOUD=window.MOCK_CLOUD;
     else{ if(!window.FBSDK||!window.FIREBASE_CONFIG) throw new Error("firebase.js or config.js is missing from the app files"); CLOUD=firebaseCloud(window.FIREBASE_CONFIG); }
+    CLOUD=wrapCloud(CLOUD);
   }catch(e){ document.body.innerHTML=`<p style="padding:30px;font:16px system-ui">The app could not start: ${esc(e.message)}.</p>`; return; }
   setNet();
   CLOUD.onAuth(async user=>{

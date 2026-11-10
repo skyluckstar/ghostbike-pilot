@@ -3,29 +3,42 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() { return request.auth != null; }
+    function email() { return request.auth.token.email.lower(); }
 
-    // Managers: the only logins that can open Day report and Settings.
+    // Managers: see every branch, open Day report and Settings.
     // Keep this list the same as ADMIN_EMAILS in index.html (all lowercase).
     function isManager() {
       return signedIn() && ('email' in request.auth.token)
-        && request.auth.token.email.lower() in ['feras.kastero@hotmail.com', 'ma.handlle@outlook.com'];
+        && email() in ['feras.kastero@hotmail.com', 'ma.handlle@outlook.com'];
     }
 
-    // Settings and bikes: every desk reads them, only managers change them.
-    // "counters" (order and invoice numbers) is updated by every desk.
+    // The branch a staff login works in: set in Settings → Branches (config/access). Not listed = Main branch.
+    function accessPath() { return /databases/$(database)/documents/config/access; }
+    function myBranch() {
+      return (('email' in request.auth.token) && exists(accessPath()))
+        ? get(accessPath()).data.users.get(email(), 'main') : 'main';
+    }
+    // Main branch data: orders, units, drafts. Another branch: orders__sc, units__sc, drafts__sc ...
+    function branchOf(col) { return col.matches('.+__.+') ? col.split('__')[1] : 'main'; }
+
+    // Settings, bikes and branch staff list: every desk reads; only managers change.
+    // Order/invoice counters (counters, counters__sc): every desk updates.
     match /config/{docId} {
       allow read: if signedIn();
-      allow write: if (docId == 'counters' && signedIn()) || isManager();
+      allow write: if (docId.matches('counters(__.+)?') && signedIn()) || isManager();
     }
 
-    // Day reports (cash counts): managers only.
-    match /days/{docId} {
-      allow read, write: if isManager();
+    // Customers: shared by all branches.
+    match /customers/{docId} {
+      allow read, write: if signedIn();
     }
 
-    // Orders, customers, bike codes and held tickets: every signed-in desk.
+    // Everything else (orders, units, drafts, day reports) belongs to one branch.
     match /{collection}/{docId} {
-      allow read, write: if signedIn() && collection != 'config' && collection != 'days';
+      allow read, write: if signedIn() && collection != 'config' && collection != 'customers' && (
+        isManager() ||
+        (!collection.matches('days(__.+)?') && branchOf(collection) == myBranch())
+      );
     }
   }
 }
