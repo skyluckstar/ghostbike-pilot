@@ -687,7 +687,14 @@ const flush=async()=>{ await Promise.all(Object.values(orderChains)); };
 
 /* ---------- live updates from other desks ---------- */
 let refreshTimer=null, refreshWanted=false;
+// A tap only counts if the button is still there when the finger lifts. Redrawing the screen in between (30-s timer, update from
+// another desk) replaced the button and the tap was lost. So: while pressing, hold redraws; run them right after the tap.
+let PRESSING=false, PRESS_WANT=false;
+document.addEventListener("pointerdown",()=>{PRESSING=true;},true);
+const pressEnd=()=>{ if(!PRESSING) return; setTimeout(()=>{ PRESSING=false; if(PRESS_WANT){ PRESS_WANT=false; scheduleRefresh(); } },120); };
+document.addEventListener("pointerup",pressEnd,true); document.addEventListener("pointercancel",pressEnd,true);
 function scheduleRefresh(){ clearTimeout(refreshTimer); refreshTimer=setTimeout(()=>{
+  if(PRESSING){ PRESS_WANT=true; return; }
   const a=document.activeElement, STATIC=["sq","ofFrom","ofTo","ofSel","lyRef","phone","bq","pscan","dq","oq","repDate","rFrom","rTo"];
   if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&!STATIC.includes(a.id)&&!$("dlg").contains(a)){ refreshWanted=true; return; }   // never wipe what someone is typing
   if(typeof refreshAll==="function"&&SET&&BIKES) refreshAll(); },60); }
@@ -1148,7 +1155,7 @@ function renderBoard(){
   const cnt=k=>active.reduce((a,o)=>a+o.lines.filter(l=>lineMatchesSt(l,k)).length,0);
   $("dst").innerHTML=DST.map(([k,lab])=>`<button data-dst="${k}" aria-pressed="${DF.st===k}">${lab} <span class="num">${cnt(k)}</span></button>`).join("");
   const open=active.filter(o=>matchQ(DF.q,o.id,o.who,o.phone,o.lines.flatMap(l=>[l.code,...(l.swaps||[]).map(s=>s.from)]))&&o.lines.some(l=>lineMatchesSt(l,DF.st)));
-  $("outList").innerHTML=open.length?open.map(o=>{
+  const outHTML=open.length?open.map(o=>{
     const riding=o.lines.filter(l=>l.state==="riding").length, waiting=o.lines.filter(l=>l.state==="waiting").length;
     const k=[...new Set(o.lines.map(l=>lineKey(o,l)))].filter(x=>x!=="none");
     return `<div class="group"><div class="ghead"><b>${esc(o.who)}</b><span>${o.id}</span>${o.phone?`<span class="num">${fmtPhone(o.phone)}</span>`:""}${k.map(x=>`<span class="tag">${esc(offerName(x,o))}</span>`).join("")}
@@ -1160,9 +1167,10 @@ function renderBoard(){
           <div><span class="v num">${l.pick?hm(el):"—"}</span><small>${l.state==="riding"?"riding":l.pick?"ridden":""}</small></div>
           <div><b>${s.txt}</b><small>${s.sub}</small></div>${btns}</div>`;}).join("")}</div>`;}).join("")
     :`<div class="empty">${active.length?`No order matches. <button class="linkbtn" data-dclear>Clear filter</button>`:"No bikes waiting or out. Confirmed orders appear here."}</div>`;
+  if(renderBoard.last!==outHTML||!$("outList").firstChild){ $("outList").innerHTML=outHTML; renderBoard.last=outHTML; }
   $("outCount").textContent=ORDERS.reduce((a,o)=>a+o.lines.filter(l=>OPEN.includes(l.state)).length,0);
 }
-function confirmPickup(c){ const l=lineByCode(c,true); if(!l||l.state!=="waiting") return; l.pick=NOW(); l.state="riding"; unit(c).st="out";
+function confirmPickup(c){ const l=lineByCode(c,true); if(!l||l.state!=="waiting"){ refreshAll(); return toast(l?`${c} is already ${l.state==="riding"?"picked up":"closed"}.`:`${c} is not waiting for pickup.`); } l.pick=NOW(); l.state="riding"; unit(c).st="out";
   persistOrder(orderOf(l)); persist("units"); refreshAll(); toast(`${c} handed over at ${clock(l.pick)}. Clock started.`); }
 // Hands over every waiting bike of one order at the same moment: all clocks start together.
 function confirmPickupAll(id){ const o=ORDERS.find(x=>x.id===id); if(!o) return; const now=NOW(), done=[];
@@ -1989,7 +1997,7 @@ document.addEventListener("keydown",e=>{
   if(e.key==="Enter"){ const v=SB.trim(); SB=""; if(/^[A-Z0-9]+-\d+$/i.test(v)){ if(VIEW==="new") scanToTicket(v); else if(VIEW==="out") handleDeskScan(v); } return; }
   if(e.key.length===1) SB+=e.key;
 });
-setInterval(()=>{ if(!SET||!BIKES) return; if(VIEW==="out") renderBoard(); checkBanner(); },30e3);
+setInterval(()=>{ if(!SET||!BIKES) return; if(VIEW==="out"){ if(PRESSING) PRESS_WANT=true; else renderBoard(); } checkBanner(); },30e3);
 
 function setNet(){ const on=navigator.onLine; $("netLbl").textContent=on?"● Online":"○ Offline — changes sync when back"; $("netLbl").className="net "+(on?"on":"off"); }
 addEventListener("online",setNet); addEventListener("offline",setNet);
