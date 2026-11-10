@@ -228,7 +228,7 @@ dialog.wide{max-width:760px}
 @media print{
   body.printing>*:not(#printArea){display:none!important}
   body.printing #printArea{display:block}
-  body.printing{background:#fff}
+  body.printing{background:#fff;margin:0;padding:0}
   body.printing .rcpt{box-shadow:none;width:72mm;padding:0}
 }
 .rc-v{border:2px dashed #111;text-align:center;font-weight:700;padding:8px;margin:6px 0}
@@ -1413,7 +1413,13 @@ function openDocs(id,no){
 function printDoc(kind,id,no){
   const {o,inv}=findInv(id,no);
   $("printArea").innerHTML=kind==="r"?receiptHTML(o,inv):invoiceHTML(o,inv);
-  $("pageStyle").textContent=kind==="r"?"@media print{@page{size:80mm auto;margin:3mm}}":"@media print{@page{size:A4;margin:14mm}}";
+  // Receipt: send the printer an 80 mm page exactly as long as the receipt (Chrome ignores "80mm auto" and would send a full A4/Letter page)
+  let page="@media print{@page{size:A4;margin:14mm}}";
+  if(kind==="r"){ const m=document.createElement("div"); m.style.cssText="position:fixed;left:-9999px;top:0;visibility:hidden"; m.innerHTML=receiptHTML(o,inv);
+    const r=m.firstElementChild; r.style.width="72mm"; r.style.padding="0"; r.style.boxShadow="none"; document.body.appendChild(m);
+    const mm=Math.ceil(r.getBoundingClientRect().height*25.4/96)+6+5; m.remove();   // + 2×3 mm margins + 5 mm safety
+    page=`@media print{@page{size:80mm ${mm}mm;margin:3mm}}`; }
+  $("pageStyle").textContent=page;
   document.body.classList.add("printing");
   const done=()=>{document.body.classList.remove("printing");removeEventListener("afterprint",done);};
   addEventListener("afterprint",done); window.print(); setTimeout(done,2000);
