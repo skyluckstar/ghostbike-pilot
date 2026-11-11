@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ghost Bike print test</title>
+<style>
+body{font:15px/1.5 "Segoe UI",Arial,sans-serif;margin:0;padding:20px;background:#F3F5F7;color:#16202B}
+h1{font-size:20px;margin:0 0 6px}
+p{margin:0 0 14px;max-width:640px}
+.grid{display:grid;gap:10px;max-width:640px}
+button{font:600 15px "Segoe UI",Arial,sans-serif;text-align:left;padding:12px 14px;border:1px solid #C9D3DD;border-radius:10px;background:#fff;cursor:pointer}
+button b{display:inline-block;width:28px;height:28px;border-radius:50%;background:#16202B;color:#fff;text-align:center;line-height:28px;margin-right:10px}
+#paper{display:none}
+@media print{ body{padding:0;background:#fff} .screen{display:none!important} #paper{display:block} @page{size:80mm auto;margin:3mm} }
+.r{width:72mm;color:#000;font-size:13px;line-height:1.35}
+.c{text-align:center}.kv{display:flex;justify-content:space-between;gap:8px}.it{display:flex;justify-content:space-between;font-weight:700;margin:3px 0}
+.rule{border-top:1px dashed #999;margin:8px 0}
+</style></head><body>
+<div class="screen">
+  <h1>Print speed test</h1>
+  <p>Tap each button, count the seconds until the preview appears, then press <b>Cancel</b>. Do all 5 and send the 5 numbers.</p>
+  <div class="grid">
+    <button data-t="1"><b>1</b>English only · Arial</button>
+    <button data-t="2"><b>2</b>English only · Courier New</button>
+    <button data-t="3"><b>3</b>English + Arabic · Courier New (like the receipt today)</button>
+    <button data-t="4"><b>4</b>English + Arabic · Tahoma</button>
+    <button data-t="5"><b>5</b>English + Arabic · Arial</button>
+  </div>
+</div>
+<div id="paper"></div>
+<script>
+var FONTS={1:'Arial,sans-serif',2:'"Courier New",monospace',3:'"Courier New",monospace',4:'Tahoma,sans-serif',5:'Arial,sans-serif'};
+function receipt(t){
+  var ar=t>=3;
+  return '<div class="r" style="font-family:'+FONTS[t]+'">'+
+   '<div class="c"><b style="font-size:17px">Ghost Bike</b>'+(ar?'<div>جوست بايك</div>':'')+'<small style="display:block">Bicycle rental · Kuwait</small><small style="display:block">Tel'+(ar?' · هاتف':'')+' 50825528</small></div>'+
+   '<div class="c" style="font-weight:700;margin:10px 0">CASH RECEIPT'+(ar?'<br><small>إيصال قبض</small>':'')+'</div>'+
+   '<div class="kv"><span>Receipt</span><span>PRCT-0001</span></div><div class="kv"><span>Order</span><span>T-00001</span></div>'+
+   '<div class="kv"><span>Customer</span><span>'+(ar?'محمد العلي':'Walk-in')+'</span></div><div class="rule"></div>'+
+   '<div class="it"><span>CL-001 Classic Bike</span><span>1.500</span></div><div class="rule"></div>'+
+   '<div class="kv" style="font-weight:700;font-size:15px"><span>Total KWD</span><span>1.500</span></div>'+
+   '<div class="c" style="font-size:11px;margin-top:6px">Thank you'+(ar?' · شكراً لزيارتكم':'')+'</div></div>';
+}
+document.addEventListener('click',function(e){
+  var b=e.target.closest('button[data-t]'); if(!b) return;
+  document.getElementById('paper').innerHTML=receipt(+b.dataset.t);
+  setTimeout(function(){ window.print(); },50);
+});
+</script>
+</body></html>
