@@ -1516,11 +1516,24 @@ function printDoc(kind,id,no){
     const t0=performance.now();
     return directPrintReceipt(o,inv).then(()=>toast(`Receipt printed (${((performance.now()-t0)/1000).toFixed(1)} s)`))
       .catch(e=>{ toast("Direct printing failed: "+(e.message||e)+". Opening normal printing."); printDoc.fallback=true; try{ printDoc(kind,id,no); } finally{ printDoc.fallback=false; } }); }
-  $("printArea").innerHTML=kind==="r"?receiptHTML(o,inv):invoiceHTML(o,inv);
-  $("pageStyle").textContent=kind==="r"?"@media print{@page{size:80mm auto;margin:3mm}}":"@media print{@page{size:A4;margin:14mm}}";   // as before v37: the receipt uses the printer's own roll-paper setting
-  document.body.classList.add("printing");
-  const done=()=>{document.body.classList.remove("printing");removeEventListener("afterprint",done);};
-  addEventListener("afterprint",done); window.print(); setTimeout(done,2000);
+  printIsolated(kind==="r"?receiptHTML(o,inv):invoiceHTML(o,inv), kind==="r"?"@page{size:80mm auto;margin:3mm}":"@page{size:A4;margin:14mm}");
+}
+// Print from a small separate page that holds only the receipt/invoice. Printing the app page itself made Chrome process the
+// whole app (all screens, styles and live data) before showing the print preview; this page has nothing else in it.
+function printIsolated(content,page){
+  const css=[...document.styleSheets].flatMap(sh=>{ try{ return [...sh.cssRules].map(r=>r.cssText); }catch(e){ return []; } })
+    .filter(t=>!/printArea|body\.printing/.test(t)).join("\n");
+  document.querySelectorAll("iframe.printframe").forEach(f=>f.remove());
+  const f=document.createElement("iframe"); f.className="printframe"; f.setAttribute("aria-hidden","true"); f.tabIndex=-1;
+  f.style.cssText="position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
+  document.body.appendChild(f);
+  const d=f.contentDocument;
+  d.open(); d.write(`<!doctype html><html><head><meta charset="utf-8"><title>Ghost Bike</title><style>${css}</style>
+    <style>${page} html,body{margin:0!important;padding:0!important;background:#fff!important;color:#000;min-height:0!important;height:auto!important;overflow:visible!important}
+    .rcpt{box-shadow:none!important;width:72mm!important;padding:0!important;margin:0!important}</style></head><body>${content}</body></html>`); d.close();
+  const go=()=>{ const w=f.contentWindow, rm=()=>setTimeout(()=>f.remove(),1000);
+    w.addEventListener("afterprint",rm); try{ w.focus(); }catch(e){} w.print(); };
+  if(d.readyState==="complete") setTimeout(go,0); else f.addEventListener("load",go,{once:true});
 }
 let WA=null;
 function openWA(id,no){
