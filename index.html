@@ -1328,6 +1328,69 @@ function openSettle(id){
     <div id="discBox"></div><div id="settlePay"></div><div class="acts"><button data-act="close">Cancel</button><button class="primary" data-act="dosettle">Post invoice</button></div>`;
   drawDisc(); drawSettle(); $("dlg").showModal();
 }
+/* ---------- Direct printing: receipt → 576-dot bitmap → ESC/POS raster → QZ Tray → Epson (no print screen, no Windows driver) ----------
+   The receipt is drawn by the browser itself (exact Arabic), turned into black/white dots at the printer's 203 dpi (72 mm = 576 dots),
+   and sent as raw Epson commands. Set per PC (Settings → Direct printing), so only the POS with QZ Tray uses it. */
+const DP=()=>META.directPrint||{};
+const RC_W=576, RC_CSSW=272;   // 72 mm printable width: 576 printer dots / 272 CSS px
+async function receiptBitmap(o,inv){
+  const css=[...document.styleSheets].flatMap(sh=>{ try{ return [...sh.cssRules].map(r=>r.cssText); }catch(e){ return []; } }).filter(t=>/\.rc/.test(t)&&!t.startsWith("@")).join("\n");
+  const holder=document.createElement("div"); holder.style.cssText=`position:fixed;left:-9999px;top:0;width:${RC_CSSW}px`;
+  holder.innerHTML=receiptHTML(o,inv); const r=holder.firstElementChild; r.style.cssText=`width:${RC_CSSW}px;padding:0;margin:0;box-shadow:none;background:#fff;color:#000`;
+  document.body.appendChild(holder); const hCss=Math.ceil(r.getBoundingClientRect().height)+2; const xhtml=new XMLSerializer().serializeToString(r); holder.remove();
+  const k=RC_W/RC_CSSW, H=Math.ceil(hCss*k);
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${RC_W}" height="${H}"><foreignObject x="0" y="0" width="${RC_CSSW}" height="${hCss}" transform="scale(${k})"><div xmlns="http://www.w3.org/1999/xhtml"><style>${css}</style>${xhtml}</div></foreignObject></svg>`;
+  const img=new Image(); img.src="data:image/svg+xml;charset=utf-8,"+encodeURIComponent(svg); await img.decode();
+  const c=document.createElement("canvas"); c.width=RC_W; c.height=H; const g=c.getContext("2d",{willReadFrequently:true});
+  g.fillStyle="#fff"; g.fillRect(0,0,RC_W,H); g.drawImage(img,0,0);
+  const px=g.getImageData(0,0,RC_W,H).data, rowB=RC_W/8, bits=new Uint8Array(rowB*H);
+  for(let y=0;y<H;y++) for(let x=0;x<RC_W;x++){ const i=(y*RC_W+x)*4, lum=0.299*px[i]+0.587*px[i+1]+0.114*px[i+2];
+    if(lum<165) bits[y*rowB+(x>>3)]|=0x80>>(x&7); }          // dark dot → burn
+  let top=0, bot=H-1; const blank=y=>{ for(let b=0;b<rowB;b++) if(bits[y*rowB+b]) return false; return true; };
+  while(top<bot&&blank(top)) top++; while(bot>top&&blank(bot)) bot--;   // trim blank paper above/below
+  return {w:RC_W,h:bot-top+1,bits:bits.slice(top*rowB,(bot+1)*rowB)};
+}
+// ESC/POS: initialise, raster image in bands (GS v 0, max 2303 rows per command; 256-row bands keep the printer buffer happy), feed, partial cut
+function escposReceipt(bmp){
+  const rowB=bmp.w/8, out=[0x1B,0x40, 0x1B,0x61,0x00];
+  for(let y=0;y<bmp.h;y+=256){ const n=Math.min(256,bmp.h-y);
+    out.push(0x1D,0x76,0x30,0x00, rowB&255,rowB>>8, n&255,n>>8); for(let i=y*rowB;i<(y+n)*rowB;i++) out.push(bmp.bits[i]); }
+  out.push(0x1B,0x64,0x04, 0x1D,0x56,0x42,0x00);
+  return new Uint8Array(out);
+}
+const b64=u8=>{ let s=""; for(let i=0;i<u8.length;i+=0x8000) s+=String.fromCharCode.apply(null,u8.subarray(i,i+0x8000)); return btoa(s); };
+function loadScript(src){ return new Promise((ok,no)=>{ if(document.querySelector(`script[data-src="${src}"]`)) return ok(); const sc=document.createElement("script"); sc.src=src; sc.dataset.src=src; sc.onload=ok; sc.onerror=()=>no(new Error(src+" could not load")); document.head.appendChild(sc); }); }
+const pemBlock=(txt,tag)=>{ const m=(txt||"").match(new RegExp(`-----BEGIN ${tag}-----[\\s\\S]+?-----END ${tag}-----`)); return m?m[0]:""; };
+let QZ_KEY=null;
+async function qzConnect(){
+  if(!window.qz) await loadScript("qz-tray.js");
+  if(qz.websocket.isActive()) return;
+  const cert=pemBlock(SET.qzKey,"CERTIFICATE"), key=pemBlock(SET.qzKey,"PRIVATE KEY");
+  qz.security.setCertificatePromise((ok)=>ok(cert||null));
+  qz.security.setSignatureAlgorithm("SHA512");
+  qz.security.setSignaturePromise(toSign=>async(ok,no)=>{ try{
+    if(!key) return ok();   // no key: QZ Tray asks "Allow" on screen
+    if(!QZ_KEY){ const der=Uint8Array.from(atob(key.replace(/-----[^-]+-----|\s/g,"")),c=>c.charCodeAt(0));
+      QZ_KEY=await crypto.subtle.importKey("pkcs8",der,{name:"RSASSA-PKCS1-v1_5",hash:"SHA-512"},false,["sign"]); }
+    ok(b64(new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5",QZ_KEY,new TextEncoder().encode(toSign))))); }catch(e){ no(e); } });
+  await withTimeout(qz.websocket.connect({retries:1,delay:0.3}),8000).catch(e=>{ throw new Error("QZ Tray is not running on this PC ("+(e.message||e)+")"); });
+}
+async function directPrintReceipt(o,inv){
+  await qzConnect();
+  const data=escposReceipt(await receiptBitmap(o,inv));
+  await qz.print(qz.configs.create(DP().printer||"EPSON TM-T20II Receipt"),[{type:"raw",format:"base64",data:b64(data)}]);
+  return data.length;
+}
+async function qzFindPrinters(){ try{ await qzConnect(); const list=await qz.printers.find(); const box=$("dpList"); if(box) box.innerHTML=(Array.isArray(list)?list:[list]).map(n=>`<button class="btn" data-dppick="${esc(n)}">${esc(n)}</button>`).join("")||"No printers found."; }
+  catch(e){ toast(e.message||String(e)); } }
+async function dpTest(){ const o=ORDERS.find(x=>x.invoices.length); if(!o) return toast("Make one sale first, then test.");
+  const t0=performance.now(); try{ const n=await directPrintReceipt(o,o.invoices[0]); toast(`Test receipt sent: ${(n/1024).toFixed(0)} KB in ${((performance.now()-t0)/1000).toFixed(1)} s.`); }catch(e){ toast("Test failed: "+(e.message||e)); } }
+async function setQzKey(){ const v=$("dpKey").value.trim();
+  if(v&&(!pemBlock(v,"CERTIFICATE")||!pemBlock(v,"PRIVATE KEY"))) return toast("Paste the whole key file: it has a CERTIFICATE part and a PRIVATE KEY part.");
+  const AC=adminCloud(); if(!AC||!isOwner()) return toast("Only the owner can set the printing key.");
+  try{ const sv=await withTimeout(AC.txn(async t=>{ const x=(await t.get("config","settings"))||clean(SET); x.qzKey=v; x.rev=(x.rev||0)+1; t.set("config","settings",clean(x)); return x; }),15000);
+    MY_SET_REV=sv.rev; SET.qzKey=v; QZ_KEY=null; try{ if(window.qz&&qz.websocket.isActive()) await qz.websocket.disconnect(); }catch(e){} toast(v?"Printing key saved for every desk.":"Printing key removed."); renderSettings(); }
+  catch(e){ toast("Could not save: "+(e.code||e.message)); } }
 const keyHash=async k=>{ const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode("ghostbike-disc:"+k)); return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,"0")).join(""); };
 async function setDiscKey(){ const a=$("dkNew").value, b=$("dkRep").value;
   if(a.length<4) return toast("The passkey needs at least 4 characters."); if(a!==b) return toast("The two passkeys are different.");
@@ -1449,6 +1512,10 @@ function openDocs(id,no){
 }
 function printDoc(kind,id,no){
   const {o,inv}=findInv(id,no);
+  if(kind==="r"&&DP().on&&!printDoc.fallback){   // this PC prints receipts straight to the Epson through QZ Tray
+    const t0=performance.now();
+    return directPrintReceipt(o,inv).then(()=>toast(`Receipt printed (${((performance.now()-t0)/1000).toFixed(1)} s)`))
+      .catch(e=>{ toast("Direct printing failed: "+(e.message||e)+". Opening normal printing."); printDoc.fallback=true; try{ printDoc(kind,id,no); } finally{ printDoc.fallback=false; } }); }
   $("printArea").innerHTML=kind==="r"?receiptHTML(o,inv):invoiceHTML(o,inv);
   $("pageStyle").textContent=kind==="r"?"@media print{@page{size:80mm auto;margin:3mm}}":"@media print{@page{size:A4;margin:14mm}}";   // as before v37: the receipt uses the printer's own roll-paper setting
   document.body.classList.add("printing");
@@ -1815,6 +1882,15 @@ function renderSettings(){
     <div class="sgrid"><label>New passkey<input id="dkNew" type="password" autocomplete="new-password"></label><label>Repeat passkey<input id="dkRep" type="password" autocomplete="new-password"></label></div>
     <div class="btnrow"><button class="btn pri" data-setkey>Set passkey</button></div>
     <p class="lnote">Changing it cancels the old passkey on every desk straight away. At least 4 characters.</p></div>
+  <div class="spanel"><h3>Direct printing (QZ Tray)</h3>
+    <p>Prints receipts straight to the Epson in under a second, with no print screen. Needs the free <b>QZ Tray</b> program on the PC (see the IT guide).</p>
+    <div class="sgrid"><label class="onsw" style="align-self:end"><input type="checkbox" id="dpOn" ${DP().on?"checked":""}> Print receipts directly on <b>this PC</b></label>
+      <label>Receipt printer name (as in Windows)<input id="dpPrinter" value="${esc(DP().printer||"EPSON TM-T20II Receipt")}"></label></div>
+    <div class="btnrow"><button class="btn" data-dpsave>Save for this PC</button><button class="btn" data-dpfind>Find printers</button><button class="btn" data-dptest>Test print</button></div>
+    <div id="dpList" class="btnrow"></div>
+    <label style="display:block;margin-top:10px">Printing key (paste the whole <b>ghostbike-print-key.txt</b>, shared by all desks)<textarea id="dpKey" rows="3" style="width:100%;font:12px ui-monospace,monospace" placeholder="-----BEGIN CERTIFICATE----- … -----BEGIN PRIVATE KEY----- …">${esc(SET.qzKey||"")}</textarea></label>
+    <div class="btnrow"><button class="btn pri" data-dpkey>Save printing key</button></div>
+    <p class="lnote">${SET.qzKey?"Key saved: QZ Tray prints without asking (after IT installs the matching override.crt).":"No key yet: QZ Tray will ask “Allow” on screen."} If direct printing fails, the app opens normal printing automatically.</p></div>
   <div class="spanel"><h3>Managers</h3><p>Settings, Day report and sales totals: <b>${OWNER_EMAILS.join(", ")}</b> only.</p>
     <p class="lnote">To add or remove a manager, ask support: the list is also set in the Firebase security rules.</p></div>
   <div class="spanel"><h3>Backups</h3>
@@ -2026,6 +2102,11 @@ document.addEventListener("click",e=>{
   if(c("[data-sadd]")) return addSettlePay();
   if(c("[data-discopen]")){ if(isOwner()){ SP.discBy=(isOwnerEmail(CURUSER&&CURUSER.email)?CURUSER.email:ELEV.email); SP.discVia="owner"; SP.discStep="form"; } else SP.discStep="auth"; return drawDisc(); }
   if(c("[data-setkey]")) return setDiscKey();
+  if(c("[data-dpsave]")){ META.directPrint={on:$("dpOn").checked,printer:$("dpPrinter").value.trim()||"EPSON TM-T20II Receipt"}; saveMeta(); return toast(META.directPrint.on?"Direct printing ON for this PC.":"Direct printing OFF for this PC."); }
+  if(c("[data-dpfind]")) return qzFindPrinters();
+  if(x=c("[data-dppick]")){ $("dpPrinter").value=x.dataset.dppick; return; }
+  if(c("[data-dptest]")) return dpTest();
+  if(c("[data-dpkey]")) return setQzKey();
   if(c("[data-disccancel]")){ SP.discStep=null; return drawDisc(); }
   if(c("[data-discauth]")) return discAuth();
   if(c("[data-discapply]")) return discApply();
